@@ -1,0 +1,38 @@
+name: Publish
+
+on:
+  push:
+    tags:
+      - "pi-*-*.*.*"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+      - name: Install dependencies
+        run: npm ci
+      - name: Validate release tag
+        run: node scripts/resolve-release.mjs "$GITHUB_REF_NAME"
+      - name: Validate package and tag
+        run: npm run check
+      - name: Publish package
+        shell: bash
+        run: |
+          release="$(node scripts/resolve-release.mjs "$GITHUB_REF_NAME")"
+          workspace="$(node -e 'console.log(JSON.parse(process.argv[1]).workspace)' "$release")"
+          package_name="$(node -e 'console.log(JSON.parse(process.argv[1]).packageName)' "$release")"
+          version="$(node -e 'console.log(JSON.parse(process.argv[1]).version)' "$release")"
+          echo "Publishing ${package_name}@${version}"
+          npm publish --workspace="$workspace" --provenance --access public

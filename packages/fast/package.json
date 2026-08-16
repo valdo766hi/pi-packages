@@ -1,0 +1,28 @@
+{
+  "name": "@valdo766hi/pi-fast",
+  "version": "0.1.0",
+  "description": "Pi extension for OpenAI priority service-tier requests",
+  "type": "module",
+  "license": "Apache-2.0",
+  "author": "valdo766hi",
+  "keywords": [
+    "pi-package",
+    "pi-extension"
+  ],
+  "files": [
+    "fast.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "pi": {
+    "extensions": [
+      "./fast.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

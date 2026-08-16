@@ -1,0 +1,29 @@
+{
+  "name": "@valdo766hi/pi-footer",
+  "version": "0.1.0",
+  "description": "Pi extension with a context and token-usage footer",
+  "type": "module",
+  "license": "Apache-2.0",
+  "author": "valdo766hi",
+  "keywords": [
+    "pi-package",
+    "pi-extension"
+  ],
+  "files": [
+    "footer.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "pi": {
+    "extensions": [
+      "./footer.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  }
+}

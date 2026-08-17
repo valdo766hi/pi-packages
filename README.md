@@ -43,7 +43,7 @@ tag:
 ```sh
 npm version --workspace=packages/lazy-skill-tool --no-git-tag-version 0.1.1
 npm run check
-git tag pi-lazy-skill-tool-0.1.1
+git tag -a pi-lazy-skill-tool-0.1.1 -m "release: pi-lazy-skill-tool 0.1.1"
 git push origin main --follow-tags
 ```
 

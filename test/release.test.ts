@@ -14,7 +14,7 @@ function resolveRelease(tag: string) {
 }
 
 test("published packages declare the provenance repository", () => {
-	for (const workspace of ["fast", "footer", "yolo"]) {
+	for (const workspace of ["fast", "footer", "yolo", "lazy-skill-tool"]) {
 		const manifest = JSON.parse(
 			readFileSync(`packages/${workspace}/package.json`, "utf8"),
 		);
@@ -27,6 +27,11 @@ test("release tags resolve to the matching package version", () => {
 		packageName: "@valdo766hi/pi-fast",
 		version: "0.1.2",
 		workspace: "packages/fast",
+	});
+	assert.deepEqual(resolveRelease("pi-lazy-skill-tool-0.1.0"), {
+		packageName: "@valdo766hi/pi-lazy-skill-tool",
+		version: "0.1.0",
+		workspace: "packages/lazy-skill-tool",
 	});
 });
 

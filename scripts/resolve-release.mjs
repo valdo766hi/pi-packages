@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
-const packages = ["fast", "footer", "yolo"];
+const packages = ["fast", "footer", "lazy-skill-tool", "yolo"];
 const tag = process.argv[2] ?? process.env.GITHUB_REF_NAME;
 
 if (!tag) {

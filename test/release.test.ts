@@ -28,11 +28,17 @@ test("release tags resolve to the matching package version", () => {
 		version: "0.1.2",
 		workspace: "packages/fast",
 	});
-	assert.deepEqual(resolveRelease("pi-lazy-skill-tool-0.1.0"), {
-		packageName: "@valdo766hi/pi-lazy-skill-tool",
-		version: "0.1.0",
-		workspace: "packages/lazy-skill-tool",
-	});
+	const lazyManifest = JSON.parse(
+		readFileSync("packages/lazy-skill-tool/package.json", "utf8"),
+	);
+	assert.deepEqual(
+		resolveRelease(`pi-lazy-skill-tool-${lazyManifest.version}`),
+		{
+			packageName: "@valdo766hi/pi-lazy-skill-tool",
+			version: lazyManifest.version,
+			workspace: "packages/lazy-skill-tool",
+		},
+	);
 });
 
 test("release tag resolution rejects unknown and malformed tags", () => {

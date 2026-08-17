@@ -1,10 +1,14 @@
 {
   "name": "@valdo766hi/pi-fast",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Pi extension for OpenAI priority service-tier requests",
   "type": "module",
   "license": "Apache-2.0",
   "author": "valdo766hi",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/valdo766hi/pi-packages"
+  },
   "keywords": [
     "pi-package",
     "pi-extension"

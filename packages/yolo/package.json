@@ -5,6 +5,10 @@
   "type": "module",
   "license": "Apache-2.0",
   "author": "valdo766hi",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/valdo766hi/pi-packages"
+  },
   "keywords": [
     "pi-package",
     "pi-extension"

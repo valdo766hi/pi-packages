@@ -1,6 +1,7 @@
 // Fast mode — opt into OpenAI's `priority` service tier for the current session.
 //
-// State lives in memory only: every new pi session starts with fast mode off.
+// State lives in memory by default. Set PI_FAST=1 before starting Pi to opt
+// the process into fast mode explicitly.
 
 import type * as Pi from "@earendil-works/pi-coding-agent";
 
@@ -9,6 +10,7 @@ const FAST_PROVIDERS = new Set(["openai", "openai-codex"]);
 
 /** Request APIs that serialize a `service_tier` field. */
 const FAST_APIS = new Set(["openai-responses", "openai-codex-responses"]);
+const isEnvEnabled = () => process.env.PI_FAST === "1";
 
 /**
  * Nerd-font bolt (nf-fa-bolt). Written as an escape because the literal glyph
@@ -17,18 +19,18 @@ const FAST_APIS = new Set(["openai-responses", "openai-codex-responses"]);
 const ICON = "\u{f0e7}";
 
 export default function (pi: Pi.ExtensionAPI) {
-	let enabled = false;
+	let enabled = isEnvEnabled();
 	let pendingCostMultiplier = 1;
 
 	const updateStatus = (ctx: Pi.ExtensionContext) => {
 		ctx.ui.setStatus("fast", `${ICON} FAST: ${enabled ? "ON" : "OFF"}`);
 	};
 
-	// Fast mode is never persisted; a new or resumed session always starts off.
+	// Fast mode is not persisted by Pi; sessions start off unless PI_FAST=1.
 	pi.on(
 		"session_start",
 		(_event: Pi.SessionStartEvent, ctx: Pi.ExtensionContext) => {
-			enabled = false;
+			enabled = isEnvEnabled();
 			pendingCostMultiplier = 1;
 			updateStatus(ctx);
 		},

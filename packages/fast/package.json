@@ -1,6 +1,6 @@
 {
   "name": "@valdo766hi/pi-fast",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Pi extension for OpenAI priority service-tier requests",
   "type": "module",
   "license": "Apache-2.0",

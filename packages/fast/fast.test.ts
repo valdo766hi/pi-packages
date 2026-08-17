@@ -16,7 +16,11 @@ const CODEX = {
 	api: "openai-codex-responses",
 };
 
-function setup() {
+function setup(options: { fastFromEnv?: boolean } = {}) {
+	const previousFastEnv = process.env.PI_FAST;
+	if (options.fastFromEnv) process.env.PI_FAST = "1";
+	else delete process.env.PI_FAST;
+
 	const handlers = new Map<string, (event: any, ctx: any) => any>();
 	const commands = new Map<
 		string,
@@ -42,8 +46,13 @@ function setup() {
 			commands.set(name, command),
 	};
 
-	fastExtension(pi as any);
-	handlers.get("session_start")!({ type: "session_start" }, ctx);
+	try {
+		fastExtension(pi as any);
+		handlers.get("session_start")!({ type: "session_start" }, ctx);
+	} finally {
+		if (previousFastEnv === undefined) delete process.env.PI_FAST;
+		else process.env.PI_FAST = previousFastEnv;
+	}
 
 	return {
 		notifications,
@@ -83,8 +92,18 @@ function setup() {
 	};
 }
 
-test("a new session starts off", () => {
-	assert.equal(setup().state(), "off");
+test("a new session starts off, even after a parent enables fast mode", async () => {
+	const parent = setup();
+	await parent.fast("on");
+	assert.equal(parent.state(), "on");
+
+	// A spawned subagent has its own extension instance and session state.
+	const child = setup();
+	assert.equal(child.state(), "off");
+});
+
+test("PI_FAST=1 explicitly enables fast mode for a new process", () => {
+	assert.equal(setup({ fastFromEnv: true }).state(), "on");
 });
 
 // The bolt is a private-use codepoint, so pin it: tooling has silently

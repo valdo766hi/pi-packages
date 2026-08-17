@@ -17,9 +17,11 @@ This extension registers `/fast`, which opts the current session into OpenAI's
 /fast off   # disable
 ```
 
-State is in-memory only. Every new or resumed session starts off, so a session
-never inherits a paid tier from an earlier one. The footer shows a nerd-font
-bolt (`nf-fa-bolt`, U+F0E7) followed by `FAST: ON` or `FAST: OFF`.
+State is in-memory by default. Every new or resumed session starts off, so a
+session never inherits a paid tier from an earlier one. To explicitly opt a
+process or spawned Pi session in, start it with `PI_FAST=1`; otherwise enable
+`/fast on` separately in that session. The footer shows a nerd-font bolt
+(`nf-fa-bolt`, U+F0E7) followed by `FAST: ON` or `FAST: OFF`.
 
 The glyph is a private-use codepoint, so `fast.ts` writes it as the escape
 `"\u{f0e7}"` rather than a literal — editors and pipelines have silently

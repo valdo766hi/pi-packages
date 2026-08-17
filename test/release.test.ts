@@ -11,15 +11,15 @@ function resolveRelease(tag: string) {
 }
 
 test("release tags resolve to the matching package version", () => {
-	assert.deepEqual(resolveRelease("pi-fast-0.1.0"), {
+	assert.deepEqual(resolveRelease("pi-fast-0.1.1"), {
 		packageName: "@valdo766hi/pi-fast",
-		version: "0.1.0",
+		version: "0.1.1",
 		workspace: "packages/fast",
 	});
 });
 
 test("release tag resolution rejects unknown and malformed tags", () => {
-	for (const tag of ["pi-fast-0.1.1", "pi-rtk-0.1.0", "v0.1.0"]) {
+	for (const tag of ["pi-fast-0.1.0", "pi-rtk-0.1.0", "v0.1.0"]) {
 		const result = spawnSync(
 			process.execPath,
 			["scripts/resolve-release.mjs", tag],

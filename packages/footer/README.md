@@ -10,4 +10,6 @@ Install it with:
 pi install npm:@valdo766hi/pi-footer
 ```
 
+[View this package on npm](https://www.npmjs.com/package/@valdo766hi/pi-footer)
+
 Use `/footer` to toggle the custom footer and restore Pi's built-in footer.

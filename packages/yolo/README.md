@@ -6,6 +6,8 @@ Install it with:
 pi install npm:@valdo766hi/pi-yolo
 ```
 
+[View this package on npm](https://www.npmjs.com/package/@valdo766hi/pi-yolo)
+
 This extension registers `/yolo` and keeps the session's YOLO state in sync
 with `@gotgenes/pi-permission-system`'s native `yoloMode` setting. Install that
 permission-system extension separately before using this package.

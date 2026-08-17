@@ -79,6 +79,8 @@ OpenCode's framework or discovery service.
 pi install npm:@valdo766hi/pi-lazy-skill-tool
 ```
 
+[View this package on npm](https://www.npmjs.com/package/@valdo766hi/pi-lazy-skill-tool)
+
 The package requires Pi `@earendil-works/pi-coding-agent` `>=0.69.0 <1.0.0`
 and `typebox` `>=1.3.7 <2.0.0`. It was tested with Pi
 `@earendil-works/pi-coding-agent@0.84.2`. The test harness uses Pi's canonical

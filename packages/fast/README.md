@@ -6,6 +6,8 @@ Install it with:
 pi install npm:@valdo766hi/pi-fast
 ```
 
+[View this package on npm](https://www.npmjs.com/package/@valdo766hi/pi-fast)
+
 This extension registers `/fast`, which opts the current session into OpenAI's
 `priority` service tier.
 

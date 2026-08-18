@@ -3,7 +3,13 @@ import {
 	getAgentDir,
 	type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
-import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	readFileSync,
+	renameSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 
 const CONFIG_PATH = [
@@ -11,13 +17,31 @@ const CONFIG_PATH = [
 	"pi-permission-system",
 	"config.json",
 ] as const;
+const STATE_PATH = ["yolo-state.json"] as const;
 
 type PermissionConfig = {
 	yoloMode?: unknown;
 };
 
+type PersistedYoloState = {
+	enabled: boolean;
+};
+
 function permissionConfigPath(): string {
 	return join(getAgentDir(), ...CONFIG_PATH);
+}
+
+function yoloStatePath(): string {
+	return join(getAgentDir(), ...STATE_PATH);
+}
+
+function isMissingFile(error: unknown): boolean {
+	return (
+		typeof error === "object" &&
+		error !== null &&
+		"code" in error &&
+		(error as { code?: unknown }).code === "ENOENT"
+	);
 }
 
 /**
@@ -29,6 +53,60 @@ function readNativeYoloMode(): boolean {
 		readFileSync(permissionConfigPath(), "utf8"),
 	) as PermissionConfig;
 	return config.yoloMode === true;
+}
+
+/**
+ * Read the user's last explicit toggle. A missing state file is initialized
+ * from the native setting for upgrades; a completely new installation starts
+ * with YOLO off.
+ */
+function readPersistedYoloMode(): boolean {
+	try {
+		const state = JSON.parse(
+			readFileSync(yoloStatePath(), "utf8"),
+		) as PersistedYoloState;
+		if (typeof state.enabled !== "boolean") {
+			throw new Error("YOLO state must contain a boolean 'enabled' value");
+		}
+		return state.enabled;
+	} catch (error) {
+		if (!isMissingFile(error)) throw error;
+
+		let enabled = false;
+		try {
+			enabled = readNativeYoloMode();
+		} catch (nativeError) {
+			if (!isMissingFile(nativeError)) throw nativeError;
+		}
+		writePersistedYoloMode(enabled);
+		return enabled;
+	}
+}
+
+function writePersistedYoloMode(enabled: boolean): void {
+	const statePath = yoloStatePath();
+	const tempPath = `${statePath}.tmp`;
+	let tempWritten = false;
+
+	try {
+		mkdirSync(getAgentDir(), { recursive: true });
+		writeFileSync(
+			tempPath,
+			`${JSON.stringify({ enabled } satisfies PersistedYoloState, null, 2)}\n`,
+			"utf8",
+		);
+		tempWritten = true;
+		renameSync(tempPath, statePath);
+	} catch (error) {
+		if (tempWritten) {
+			try {
+				unlinkSync(tempPath);
+			} catch {
+				// Ignore cleanup failures.
+			}
+		}
+		throw error;
+	}
 }
 
 function setNativeYoloMode(enabled: boolean): void {
@@ -65,11 +143,13 @@ export default function (pi: ExtensionAPI) {
 	};
 	const syncStatus = (ctx) => {
 		try {
-			enabled = readNativeYoloMode();
-		} catch {
+			const nextEnabled = readPersistedYoloMode();
+			setNativeYoloMode(nextEnabled);
+			enabled = nextEnabled;
+		} catch (error) {
 			enabled = false;
 			ctx.ui.notify(
-				"YOLO could not read the permission-system native yolo setting.",
+				`YOLO could not persist its state: ${error instanceof Error ? error.message : String(error)}`,
 				"warning",
 			);
 		}
@@ -79,12 +159,15 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		syncStatus(ctx);
 	});
+	pi.on("input", (_event, ctx) => {
+		syncStatus(ctx);
+	});
 	pi.on("before_agent_start", (_event, ctx) => {
 		syncStatus(ctx);
 	});
 	pi.on("session_compact", (_event, ctx) => {
 		// Compaction rebuilds the conversation branch. YOLO is deliberately
-		// read from the native config instead of compacted session entries.
+		// read from its persistent state file instead of compacted entries.
 		syncStatus(ctx);
 	});
 
@@ -99,23 +182,22 @@ export default function (pi: ExtensionAPI) {
 
 			let currentEnabled: boolean;
 			try {
-				currentEnabled = readNativeYoloMode();
+				currentEnabled = readPersistedYoloMode();
 			} catch (error) {
 				ctx.ui.notify(
-					`YOLO could not read permission-system config: ${error instanceof Error ? error.message : String(error)}`,
+					`YOLO could not read its persistent state: ${error instanceof Error ? error.message : String(error)}`,
 					"error",
 				);
 				return;
 			}
 
-			const nextEnabled = requested
-				? requested === "on"
-				: !currentEnabled;
+			const nextEnabled = requested ? requested === "on" : !currentEnabled;
 			try {
+				writePersistedYoloMode(nextEnabled);
 				setNativeYoloMode(nextEnabled);
 			} catch (error) {
 				ctx.ui.notify(
-					`YOLO could not update permission-system config: ${error instanceof Error ? error.message : String(error)}`,
+					`YOLO could not update its state: ${error instanceof Error ? error.message : String(error)}`,
 					"error",
 				);
 				return;

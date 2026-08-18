@@ -8,8 +8,8 @@ pi install npm:@valdo766hi/pi-yolo
 
 [View this package on npm](https://www.npmjs.com/package/@valdo766hi/pi-yolo)
 
-This extension registers `/yolo` and keeps the session's YOLO state in sync
-with `@gotgenes/pi-permission-system`'s native `yoloMode` setting. Install that
+This extension registers `/yolo` and keeps the global
+`@gotgenes/pi-permission-system` native `yoloMode` setting in sync. Install that
 permission-system extension separately before using this package.
 
 ## Commands
@@ -20,8 +20,10 @@ permission-system extension separately before using this package.
 /yolo off   # disable
 ```
 
-The state is stored in the Pi session as `yolo-state`. A fresh session starts
-off; resuming or reloading a session reapplies its stored state.
+The permission-system config is the single persistent source of truth. A fresh
+session, subagent, compaction, or reload reads the existing native setting and
+never resets it from session history. Older `yolo-state` session entries are
+ignored.
 
 ## Permission behavior
 
@@ -34,8 +36,9 @@ never changed. The command updates the permission-system config atomically at:
 
 `PI_CODING_AGENT_DIR` is honored by Pi. After changing the setting, the
 extension reloads Pi so the permission system sees the new value immediately.
-Home Manager may restore a Nix-declared config during a later activation, so
-restart Pi after activation and toggle YOLO again if needed.
+If Home Manager manages this file, declare the desired `yoloMode` there as
+`true`; otherwise a later activation can restore `false` and prompts will
+correctly return.
 
 This package contains only the command extension. Personal permission rules and
 Home Manager configuration are not included in the npm tarball.

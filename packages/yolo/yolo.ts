@@ -6,7 +6,6 @@ import {
 import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-const STATE_TYPE = "yolo-state";
 const CONFIG_PATH = [
 	"extensions",
 	"pi-permission-system",
@@ -25,6 +24,13 @@ function permissionConfigPath(): string {
  * Native yolo rewrites ask→allow on every surface, including
  * external_directory, while leaving explicit deny rules untouched.
  */
+function readNativeYoloMode(): boolean {
+	const config = JSON.parse(
+		readFileSync(permissionConfigPath(), "utf8"),
+	) as PermissionConfig;
+	return config.yoloMode === true;
+}
+
 function setNativeYoloMode(enabled: boolean): void {
 	const configPath = permissionConfigPath();
 	const tempPath = `${configPath}.tmp`;
@@ -57,28 +63,29 @@ export default function (pi: ExtensionAPI) {
 	const updateStatus = (ctx) => {
 		ctx.ui.setStatus("yolo", `YOLO: ${enabled ? "ON" : "OFF"}`);
 	};
-
-	pi.on("session_start", (_event, ctx) => {
-		enabled = false;
-		for (const entry of ctx.sessionManager.getBranch()) {
-			if (
-				entry.type === "custom" &&
-				entry.customType === STATE_TYPE &&
-				typeof entry.data?.enabled === "boolean"
-			) {
-				enabled = entry.data.enabled;
-			}
-		}
-
+	const syncStatus = (ctx) => {
 		try {
-			setNativeYoloMode(enabled);
+			enabled = readNativeYoloMode();
 		} catch {
+			enabled = false;
 			ctx.ui.notify(
-				"YOLO could not update the permission-system native yolo setting.",
+				"YOLO could not read the permission-system native yolo setting.",
 				"warning",
 			);
 		}
 		updateStatus(ctx);
+	};
+
+	pi.on("session_start", (_event, ctx) => {
+		syncStatus(ctx);
+	});
+	pi.on("before_agent_start", (_event, ctx) => {
+		syncStatus(ctx);
+	});
+	pi.on("session_compact", (_event, ctx) => {
+		// Compaction rebuilds the conversation branch. YOLO is deliberately
+		// read from the native config instead of compacted session entries.
+		syncStatus(ctx);
 	});
 
 	pi.registerCommand("yolo", {
@@ -90,7 +97,20 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			const nextEnabled = requested ? requested === "on" : !enabled;
+			let currentEnabled: boolean;
+			try {
+				currentEnabled = readNativeYoloMode();
+			} catch (error) {
+				ctx.ui.notify(
+					`YOLO could not read permission-system config: ${error instanceof Error ? error.message : String(error)}`,
+					"error",
+				);
+				return;
+			}
+
+			const nextEnabled = requested
+				? requested === "on"
+				: !currentEnabled;
 			try {
 				setNativeYoloMode(nextEnabled);
 			} catch (error) {
@@ -102,7 +122,6 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			enabled = nextEnabled;
-			pi.appendEntry(STATE_TYPE, { enabled });
 			updateStatus(ctx);
 			ctx.ui.notify(
 				`YOLO mode ${enabled ? "on" : "off"}. Hard denials still apply.`,

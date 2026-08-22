@@ -1,6 +1,6 @@
 {
   "name": "@valdo766hi/pi-yolo",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Pi extension that toggles native permission-system YOLO mode",
   "type": "module",
   "license": "Apache-2.0",

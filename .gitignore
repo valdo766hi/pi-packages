@@ -3,3 +3,7 @@
 node_modules
 npm-debug.log*
 .DS_Store
+
+# Local review artifacts
+/REVIEW.md
+/.pi/

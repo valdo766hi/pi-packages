@@ -20,39 +20,8 @@ function configPath(agentDir: string): string {
 	return join(agentDir, "extensions", "pi-permission-system", "config.json");
 }
 
-function legacyConfigPath(agentDir: string): string {
-	return join(agentDir, "pi-permissions.jsonc");
-}
-
-function permissionSystemPackageDir(agentDir: string): string {
-	return join(
-		agentDir,
-		"npm",
-		"node_modules",
-		"@gotgenes",
-		"pi-permission-system",
-	);
-}
-
-function writePermissionSystemVersion(agentDir: string, version: string): void {
-	const packageDir = permissionSystemPackageDir(agentDir);
-	mkdirSync(packageDir, { recursive: true });
-	writeFileSync(
-		join(packageDir, "package.json"),
-		JSON.stringify({ name: "@gotgenes/pi-permission-system", version }) + "\n",
-	);
-}
-
 function statePath(agentDir: string, sessionId: string): string {
 	return join(agentDir, "yolo-state", `${encodeURIComponent(sessionId)}.json`);
-}
-
-function readConfig(path: string): Record<string, any> {
-	try {
-		return JSON.parse(readFileSync(path, "utf8"));
-	} catch (error) {
-		assert.fail(`Could not parse test config ${path}: ${String(error)}`);
-	}
 }
 
 function setup(
@@ -62,10 +31,25 @@ function setup(
 ) {
 	const handlers = new Map<string, (event: any, ctx: any) => any>();
 	const commands = new Map<string, any>();
+	const eventHandlers = new Map<string, Set<(data: unknown) => void>>();
 	const notifications: string[] = [];
 	let status = "";
 	let reloads = 0;
 	let aborts = 0;
+	let selectCalls = 0;
+	let customCalls = 0;
+
+	const events = {
+		on: (channel: string, handler: (data: unknown) => void) => {
+			const listeners = eventHandlers.get(channel) ?? new Set();
+			listeners.add(handler);
+			eventHandlers.set(channel, listeners);
+			return () => listeners.delete(handler);
+		},
+		emit: (channel: string, data: unknown) => {
+			for (const handler of eventHandlers.get(channel) ?? []) handler(data);
+		},
+	};
 
 	const ctx = {
 		cwd: agentDir,
@@ -80,6 +64,14 @@ function setup(
 			notify: (message: string) => {
 				notifications.push(message);
 			},
+			select: async (_title: string, options: string[]) => {
+				selectCalls++;
+				return options.at(-1);
+			},
+			custom: async (_factory: unknown, _options?: unknown) => {
+				customCalls++;
+				return { original: true };
+			},
 		},
 		reload: async () => {
 			reloads++;
@@ -90,9 +82,9 @@ function setup(
 		},
 	};
 	const pi = {
+		events,
 		on: (event: string, handler: any) => handlers.set(event, handler),
-		registerCommand: (name: string, command: any) =>
-			commands.set(name, command),
+		registerCommand: (name: string, command: any) => commands.set(name, command),
 	};
 
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -106,11 +98,14 @@ function setup(
 
 	return {
 		ctx,
+		events,
 		handlers,
 		command: (args = "") => commands.get("yolo")!.handler(args, ctx),
 		notifications,
 		reloads: () => reloads,
 		aborts: () => aborts,
+		selectCalls: () => selectCalls,
+		customCalls: () => customCalls,
 		status: () => status,
 	};
 }
@@ -129,35 +124,43 @@ async function withAgentDir<T>(
 	}
 }
 
-test("YOLO is opt-in and persists per session through reload and compaction", async () => {
+function emitPermissionPrompt(yolo: ReturnType<typeof setup>): void {
+	yolo.events.emit("permissions:ui_prompt", {
+		requestId: "request-1",
+		source: "tool_call",
+		surface: "bash",
+		value: "echo hello",
+	});
+}
+
+const permissionOptions = [
+	"Yes",
+	"Yes, for this session",
+	"No",
+	"No, provide reason",
+];
+
+test("YOLO is opt-in, persists per session, and never changes native config", async () => {
 	const agentDir = tempDir("pi-yolo-");
 	const nativeConfigPath = configPath(agentDir);
+	const nativeConfig =
+		'{"yoloMode":false,"permission":{"bash":{"*":"ask","rm *":"deny"}}}\n';
 	mkdirSync(join(agentDir, "extensions", "pi-permission-system"), {
 		recursive: true,
 	});
-	writeFileSync(
-		nativeConfigPath,
-		JSON.stringify({
-			yoloMode: true,
-			permission: { bash: { "*": "ask", "rm *": "deny" } },
-		}) + "\n",
-	);
+	writeFileSync(nativeConfigPath, nativeConfig);
 
 	try {
 		await withAgentDir(agentDir, async () => {
 			const parent = setup(agentDir, "parent-session");
 			parent.handlers.get("session_start")!({}, parent.ctx);
 
-			assert.equal(readConfig(nativeConfigPath).yoloMode, false);
 			assert.equal(parent.status(), "YOLO: OFF");
-			assert.equal(
-				readConfig(nativeConfigPath).permission.bash["rm *"],
-				"deny",
-			);
 			assert.equal(existsSync(statePath(agentDir, "parent-session")), false);
 
 			await parent.command("on");
-			assert.equal(readConfig(nativeConfigPath).yoloMode, true);
+			assert.equal(parent.status(), "YOLO: ON");
+			assert.equal(readFileSync(nativeConfigPath, "utf8"), nativeConfig);
 			assert.equal(
 				JSON.parse(readFileSync(statePath(agentDir, "parent-session"), "utf8"))
 					.enabled,
@@ -165,47 +168,35 @@ test("YOLO is opt-in and persists per session through reload and compaction", as
 			);
 			assert.equal(parent.reloads(), 1);
 
-			// A native config rewrite cannot erase the session's explicit state.
-			const rewritten = readConfig(nativeConfigPath);
-			rewritten.yoloMode = false;
-			writeFileSync(nativeConfigPath, `${JSON.stringify(rewritten)}\n`);
 			parent.handlers.get("session_compact")!({}, parent.ctx);
-			assert.equal(readConfig(nativeConfigPath).yoloMode, true);
 			assert.equal(parent.status(), "YOLO: ON");
 
-			// A reloaded extension instance restores the same session's state.
 			const reloaded = setup(agentDir, "parent-session");
 			reloaded.handlers.get("session_start")!({}, reloaded.ctx);
 			assert.equal(reloaded.status(), "YOLO: ON");
 
-			// A different session has no implicit opt-in, like packages/fast.
 			const child = setup(agentDir, "child-session");
 			child.handlers.get("session_start")!({}, child.ctx);
 			assert.equal(child.status(), "YOLO: OFF");
-			assert.equal(readConfig(nativeConfigPath).yoloMode, false);
+			assert.equal(readFileSync(nativeConfigPath, "utf8"), nativeConfig);
 		});
 	} finally {
 		rmSync(agentDir, { recursive: true, force: true });
 	}
 });
 
-test("YOLO accepts native JSONC and preserves explicit deny rules", async () => {
+test("YOLO leaves Home Manager-style JSONC config and denials untouched", async () => {
 	const agentDir = tempDir("pi-yolo-jsonc-");
 	const nativeConfigPath = configPath(agentDir);
-	writePermissionSystemVersion(agentDir, "25.3.0");
+	const nativeConfig = `{
+  // Managed by Home Manager.
+  "yoloMode": false,
+  "permission": { "bash": { "*": "ask", "rm *": "deny" } }
+}\n`;
 	mkdirSync(join(agentDir, "extensions", "pi-permission-system"), {
 		recursive: true,
 	});
-	writeFileSync(
-		nativeConfigPath,
-		`{
-  // Native permission-system config supports comments.
-  "yoloMode": false,
-  "promptMaxRows": 24,
-  "promptFieldMaxWidth": 400,
-  "permission": { "bash": { "*": "ask", "rm *": "deny" } }
-}\n`,
-	);
+	writeFileSync(nativeConfigPath, nativeConfig);
 
 	try {
 		await withAgentDir(agentDir, async () => {
@@ -213,11 +204,151 @@ test("YOLO accepts native JSONC and preserves explicit deny rules", async () => 
 			yolo.handlers.get("session_start")!({}, yolo.ctx);
 			await yolo.command("on");
 
-			const native = readConfig(nativeConfigPath);
-			assert.equal(native.yoloMode, true);
-			assert.equal(native.promptMaxRows, 24);
-			assert.equal(native.promptFieldMaxWidth, 400);
-			assert.equal(native.permission.bash["rm *"], "deny");
+			assert.equal(readFileSync(nativeConfigPath, "utf8"), nativeConfig);
+		});
+	} finally {
+		rmSync(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("YOLO auto-approves permission prompts through the public UI event", async () => {
+	const agentDir = tempDir("pi-yolo-prompt-");
+
+	try {
+		await withAgentDir(agentDir, async () => {
+			const yolo = setup(agentDir, "prompt-session");
+			yolo.handlers.get("session_start")!({}, yolo.ctx);
+			await yolo.command("on");
+
+			emitPermissionPrompt(yolo);
+			const selected = await yolo.ctx.ui.select(
+				"Permission Required",
+				permissionOptions,
+			);
+			assert.equal(selected, "Yes");
+			assert.equal(yolo.selectCalls(), 0);
+
+			emitPermissionPrompt(yolo);
+			const decision = await yolo.ctx.ui.custom(
+				() => {
+					throw new Error("the native permission dialog should be bypassed");
+				},
+				{ overlay: false },
+			);
+			assert.deepEqual(decision, {
+				approved: true,
+				state: "approved",
+				autoApproved: true,
+			});
+			assert.equal(yolo.customCalls(), 0);
+		});
+	} finally {
+		rmSync(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("state revocation disables the overlay before the next prompt or tool", async () => {
+	const agentDir = tempDir("pi-yolo-revoked-");
+
+	try {
+		await withAgentDir(agentDir, async () => {
+			const yolo = setup(agentDir, "revoked-session");
+			yolo.handlers.get("session_start")!({}, yolo.ctx);
+			await yolo.command("on");
+			rmSync(statePath(agentDir, "revoked-session"));
+
+			emitPermissionPrompt(yolo);
+			assert.deepEqual(await yolo.ctx.ui.custom(() => undefined), {
+				original: true,
+			});
+			assert.equal(yolo.customCalls(), 1);
+			assert.equal(yolo.status(), "YOLO: ERROR");
+			assert.deepEqual(yolo.handlers.get("tool_call")!({}, yolo.ctx), {
+				block: true,
+				terminate: true,
+				reason:
+					"YOLO cannot verify a safe permission state; resolve YOLO: ERROR first.",
+			});
+		});
+	} finally {
+		rmSync(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("a permission decision clears a stale prompt arm", async () => {
+	const agentDir = tempDir("pi-yolo-decision-");
+
+	try {
+		await withAgentDir(agentDir, async () => {
+			const yolo = setup(agentDir, "decision-session");
+			yolo.handlers.get("session_start")!({}, yolo.ctx);
+			await yolo.command("on");
+
+			emitPermissionPrompt(yolo);
+			yolo.events.emit("permissions:decision", {
+				requestId: "request-1",
+				result: "deny",
+			});
+			assert.equal(
+				await yolo.ctx.ui.select("Permission Required", permissionOptions),
+				"No, provide reason",
+			);
+			assert.equal(yolo.selectCalls(), 1);
+		});
+	} finally {
+		rmSync(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("YOLO restores exact UI methods during shutdown", async () => {
+	const agentDir = tempDir("pi-yolo-shutdown-");
+
+	try {
+		await withAgentDir(agentDir, () => {
+			const yolo = setup(agentDir, "shutdown-session");
+			const originalSelect = yolo.ctx.ui.select;
+			const originalCustom = yolo.ctx.ui.custom;
+			yolo.handlers.get("session_start")!({}, yolo.ctx);
+			assert.notEqual(yolo.ctx.ui.select, originalSelect);
+			assert.notEqual(yolo.ctx.ui.custom, originalCustom);
+
+			yolo.handlers.get("session_shutdown")!({}, yolo.ctx);
+			assert.equal(yolo.ctx.ui.select, originalSelect);
+			assert.equal(yolo.ctx.ui.custom, originalCustom);
+
+			const reloaded = setup(agentDir, "shutdown-session");
+			const reloadedSelect = reloaded.ctx.ui.select;
+			const reloadedCustom = reloaded.ctx.ui.custom;
+			reloaded.handlers.get("session_start")!({}, reloaded.ctx);
+			reloaded.handlers.get("session_shutdown")!({}, reloaded.ctx);
+			assert.equal(reloaded.ctx.ui.select, reloadedSelect);
+			assert.equal(reloaded.ctx.ui.custom, reloadedCustom);
+		});
+	} finally {
+		rmSync(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("YOLO leaves ordinary UI prompts untouched while disabled", async () => {
+	const agentDir = tempDir("pi-yolo-ui-off-");
+
+	try {
+		await withAgentDir(agentDir, async () => {
+			const yolo = setup(agentDir, "ui-off-session");
+			yolo.handlers.get("session_start")!({}, yolo.ctx);
+
+			emitPermissionPrompt(yolo);
+			assert.equal(
+				await yolo.ctx.ui.select("Permission Required", permissionOptions),
+				"No, provide reason",
+			);
+			assert.equal(yolo.selectCalls(), 1);
+
+			emitPermissionPrompt(yolo);
+			assert.deepEqual(await yolo.ctx.ui.custom(() => undefined), {
+				original: true,
+			});
+			assert.equal(yolo.customCalls(), 1);
 		});
 	} finally {
 		rmSync(agentDir, { recursive: true, force: true });
@@ -226,11 +357,6 @@ test("YOLO accepts native JSONC and preserves explicit deny rules", async () => 
 
 test("YOLO blocks tools before initial lifecycle synchronization", async () => {
 	const agentDir = tempDir("pi-yolo-before-start-");
-	const nativeConfigPath = configPath(agentDir);
-	mkdirSync(join(agentDir, "extensions", "pi-permission-system"), {
-		recursive: true,
-	});
-	writeFileSync(nativeConfigPath, '{"yoloMode":false}\n');
 
 	try {
 		await withAgentDir(agentDir, () => {
@@ -248,200 +374,8 @@ test("YOLO blocks tools before initial lifecycle synchronization", async () => {
 	}
 });
 
-test("legacy global yolo config is overridden off until this session opts in", async () => {
-	const agentDir = tempDir("pi-yolo-legacy-global-");
-	const nativeConfigPath = configPath(agentDir);
-	writeFileSync(legacyConfigPath(agentDir), '{"yoloMode":true}\n');
-
-	try {
-		await withAgentDir(agentDir, async () => {
-			const yolo = setup(agentDir, "legacy-session");
-			yolo.handlers.get("session_start")!({}, yolo.ctx);
-
-			assert.equal(readConfig(nativeConfigPath).yoloMode, false);
-			assert.equal(yolo.status(), "YOLO: OFF");
-			await yolo.command("on");
-			assert.equal(readConfig(nativeConfigPath).yoloMode, true);
-			assert.equal(readConfig(legacyConfigPath(agentDir)).yoloMode, true);
-		});
-	} finally {
-		rmSync(agentDir, { recursive: true, force: true });
-	}
-});
-
-test("legacy extension config is overridden off until this session opts in", async () => {
-	const agentDir = tempDir("pi-yolo-legacy-extension-");
-	const nativeConfigPath = configPath(agentDir);
-	writePermissionSystemVersion(agentDir, "25.3.0");
-	writeFileSync(
-		join(permissionSystemPackageDir(agentDir), "config.json"),
-		'{"yoloMode":true}\n',
-	);
-
-	try {
-		await withAgentDir(agentDir, async () => {
-			const yolo = setup(agentDir, "legacy-extension-session");
-			yolo.handlers.get("session_start")!({}, yolo.ctx);
-
-			assert.equal(readConfig(nativeConfigPath).yoloMode, false);
-			assert.equal(yolo.status(), "YOLO: OFF");
-			await yolo.command("on");
-			assert.equal(readConfig(nativeConfigPath).yoloMode, true);
-		});
-	} finally {
-		rmSync(agentDir, { recursive: true, force: true });
-	}
-});
-
-test("invalid native schema fails closed instead of claiming YOLO is off", async () => {
-	const agentDir = tempDir("pi-yolo-invalid-schema-");
-	const nativeConfigPath = configPath(agentDir);
-	mkdirSync(join(agentDir, "extensions", "pi-permission-system"), {
-		recursive: true,
-	});
-	writeFileSync(legacyConfigPath(agentDir), '{"yoloMode":true}\n');
-	writeFileSync(nativeConfigPath, '{"yoloMode":false,"unknownSetting":true}\n');
-
-	try {
-		await withAgentDir(agentDir, () => {
-			const yolo = setup(agentDir, "invalid-schema-session");
-			yolo.handlers.get("session_start")!({}, yolo.ctx);
-
-			assert.equal(yolo.status(), "YOLO: ERROR");
-			assert.deepEqual(yolo.handlers.get("tool_call")!({}, yolo.ctx), {
-				block: true,
-				terminate: true,
-				reason:
-					"YOLO cannot verify a safe permission state; resolve YOLO: ERROR first.",
-			});
-		});
-	} finally {
-		rmSync(agentDir, { recursive: true, force: true });
-	}
-});
-
-test("new prompt bounds are rejected by older permission-system versions", async () => {
-	for (const field of ["promptMaxRows", "promptFieldMaxWidth"]) {
-		const agentDir = tempDir(`pi-yolo-old-prompt-${field}-`);
-		const nativeConfigPath = configPath(agentDir);
-		writePermissionSystemVersion(agentDir, "25.2.0");
-		mkdirSync(join(agentDir, "extensions", "pi-permission-system"), {
-			recursive: true,
-		});
-		writeFileSync(
-			nativeConfigPath,
-			JSON.stringify({ yoloMode: false, [field]: 24 }) + "\n",
-		);
-
-		try {
-			await withAgentDir(agentDir, () => {
-				const yolo = setup(agentDir, `old-prompt-${field}`);
-				yolo.handlers.get("session_start")!({}, yolo.ctx);
-				assert.equal(yolo.status(), "YOLO: ERROR", field);
-			});
-		} finally {
-			rmSync(agentDir, { recursive: true, force: true });
-		}
-	}
-});
-
-test("new prompt bounds require positive safe integers", async () => {
-	const invalidValues: unknown[] = [0, 1.5, Number.MAX_SAFE_INTEGER + 1, "24"];
-	for (const field of ["promptMaxRows", "promptFieldMaxWidth"]) {
-		for (const value of invalidValues) {
-			const agentDir = tempDir(`pi-yolo-prompt-${field}-`);
-			const nativeConfigPath = configPath(agentDir);
-			writePermissionSystemVersion(agentDir, "25.3.0");
-			mkdirSync(join(agentDir, "extensions", "pi-permission-system"), {
-				recursive: true,
-			});
-			writeFileSync(
-				nativeConfigPath,
-				JSON.stringify({ yoloMode: false, [field]: value }) + "\n",
-			);
-
-			try {
-				await withAgentDir(agentDir, () => {
-					const yolo = setup(agentDir, `bad-prompt-${field}`);
-					yolo.handlers.get("session_start")!({}, yolo.ctx);
-					assert.equal(
-						yolo.status(),
-						"YOLO: ERROR",
-						`${field}=${String(value)}`,
-					);
-				});
-			} finally {
-				rmSync(agentDir, { recursive: true, force: true });
-			}
-		}
-	}
-});
-
-test("unsafe native numeric values fail closed instead of shadowing legacy YOLO", async () => {
-	const agentDir = tempDir("pi-yolo-unsafe-number-");
-	const nativeConfigPath = configPath(agentDir);
-	writePermissionSystemVersion(agentDir, "25.3.0");
-	mkdirSync(join(agentDir, "extensions", "pi-permission-system"), {
-		recursive: true,
-	});
-	writeFileSync(legacyConfigPath(agentDir), '{"yoloMode":true}\n');
-	writeFileSync(
-		nativeConfigPath,
-		'{"yoloMode":false,"forwardingTimeoutMs":9007199254740992,"promptMaxRows":9007199254740992,"promptFieldMaxWidth":9007199254740992}\n',
-	);
-
-	try {
-		await withAgentDir(agentDir, () => {
-			const yolo = setup(agentDir, "unsafe-number-session");
-			yolo.handlers.get("session_start")!({}, yolo.ctx);
-
-			assert.equal(yolo.status(), "YOLO: ERROR");
-			assert.deepEqual(yolo.handlers.get("tool_call")!({}, yolo.ctx), {
-				block: true,
-				terminate: true,
-				reason:
-					"YOLO cannot verify a safe permission state; resolve YOLO: ERROR first.",
-			});
-		});
-	} finally {
-		rmSync(agentDir, { recursive: true, force: true });
-	}
-});
-
-test("missing project trust information fails closed", async () => {
-	const agentDir = tempDir("pi-yolo-missing-trust-");
-	const nativeConfigPath = configPath(agentDir);
-	mkdirSync(join(agentDir, "extensions", "pi-permission-system"), {
-		recursive: true,
-	});
-	writeFileSync(nativeConfigPath, '{"yoloMode":false}\n');
-
-	try {
-		await withAgentDir(agentDir, () => {
-			const yolo = setup(agentDir, "missing-trust-session");
-			Reflect.deleteProperty(yolo.ctx as object, "isProjectTrusted");
-			yolo.handlers.get("session_start")!({}, yolo.ctx);
-
-			assert.equal(yolo.status(), "YOLO: ERROR");
-			assert.deepEqual(yolo.handlers.get("tool_call")!({}, yolo.ctx), {
-				block: true,
-				terminate: true,
-				reason:
-					"YOLO cannot verify a safe permission state; resolve YOLO: ERROR first.",
-			});
-		});
-	} finally {
-		rmSync(agentDir, { recursive: true, force: true });
-	}
-});
-
 test("invalid state fails closed without claiming YOLO is off", async () => {
 	const agentDir = tempDir("pi-yolo-invalid-state-");
-	const nativeConfigPath = configPath(agentDir);
-	mkdirSync(join(agentDir, "extensions", "pi-permission-system"), {
-		recursive: true,
-	});
-	writeFileSync(nativeConfigPath, '{"yoloMode":true}\n');
 	mkdirSync(join(agentDir, "yolo-state"), { recursive: true });
 	writeFileSync(statePath(agentDir, "bad-session"), "{not-json}\n");
 
@@ -449,11 +383,8 @@ test("invalid state fails closed without claiming YOLO is off", async () => {
 		await withAgentDir(agentDir, () => {
 			const yolo = setup(agentDir, "bad-session");
 			yolo.handlers.get("session_start")!({}, yolo.ctx);
-			assert.deepEqual(
-				yolo.handlers.get("input")!({ text: "run a tool" }, yolo.ctx),
-				{ action: "handled" },
-			);
 			for (const text of [
+				"run a tool",
 				"/yolox",
 				"/YOLO",
 				"/yolo\tpayload",
@@ -470,7 +401,6 @@ test("invalid state fails closed without claiming YOLO is off", async () => {
 			yolo.handlers.get("before_agent_start")!({}, yolo.ctx);
 			yolo.handlers.get("agent_start")!({}, yolo.ctx);
 			yolo.handlers.get("turn_start")!({}, yolo.ctx);
-			assert.equal(readConfig(nativeConfigPath).yoloMode, false);
 			assert.equal(yolo.status(), "YOLO: ERROR");
 			assert.equal(yolo.aborts(), 3);
 			assert.deepEqual(yolo.handlers.get("tool_call")!({}, yolo.ctx), {
@@ -486,60 +416,16 @@ test("invalid state fails closed without claiming YOLO is off", async () => {
 	}
 });
 
-test("a trusted project override cannot silently enable YOLO", async () => {
-	const agentDir = tempDir("pi-yolo-project-override-");
-	const nativeConfigPath = configPath(agentDir);
-	const projectConfigPath = join(
-		agentDir,
-		".pi",
-		"extensions",
-		"pi-permission-system",
-		"config.json",
-	);
-	mkdirSync(join(agentDir, "extensions", "pi-permission-system"), {
-		recursive: true,
-	});
-	mkdirSync(join(agentDir, ".pi", "extensions", "pi-permission-system"), {
-		recursive: true,
-	});
-	writeFileSync(nativeConfigPath, '{"yoloMode":false}\n');
-	writeFileSync(projectConfigPath, '{"yoloMode":true}\n');
+test("YOLO can persist state without a permission-system config file", async () => {
+	const agentDir = tempDir("pi-yolo-no-config-");
 
 	try {
 		await withAgentDir(agentDir, async () => {
-			const yolo = setup(agentDir, "project-override-session");
+			const yolo = setup(agentDir, "no-config-session");
 			yolo.handlers.get("session_start")!({}, yolo.ctx);
-			yolo.handlers.get("before_agent_start")!({}, yolo.ctx);
-
-			assert.equal(yolo.status(), "YOLO: ERROR");
-			assert.equal(yolo.aborts(), 1);
-			assert.deepEqual(yolo.handlers.get("tool_call")!({}, yolo.ctx), {
-				block: true,
-				terminate: true,
-				reason:
-					"YOLO cannot verify a safe permission state; resolve YOLO: ERROR first.",
-			});
-		});
-	} finally {
-		rmSync(agentDir, { recursive: true, force: true });
-	}
-});
-
-test("missing native config keeps the default off but rejects enabling", async () => {
-	const agentDir = tempDir("pi-yolo-missing-config-");
-	mkdirSync(agentDir, { recursive: true });
-
-	try {
-		await withAgentDir(agentDir, async () => {
-			const yolo = setup(agentDir, "missing-config-session");
-			yolo.handlers.get("session_start")!({}, yolo.ctx);
-			assert.equal(yolo.status(), "YOLO: OFF");
 			await yolo.command("on");
-			assert.equal(yolo.reloads(), 0);
-			assert.equal(
-				yolo.notifications.some((message) => /missing/i.test(message)),
-				true,
-			);
+			assert.equal(yolo.status(), "YOLO: ON");
+			assert.equal(existsSync(configPath(agentDir)), false);
 		});
 	} finally {
 		rmSync(agentDir, { recursive: true, force: true });
@@ -548,11 +434,6 @@ test("missing native config keeps the default off but rejects enabling", async (
 
 test("a reload failure does not lose a committed toggle", async () => {
 	const agentDir = tempDir("pi-yolo-reload-failure-");
-	const nativeConfigPath = configPath(agentDir);
-	mkdirSync(join(agentDir, "extensions", "pi-permission-system"), {
-		recursive: true,
-	});
-	writeFileSync(nativeConfigPath, '{"yoloMode":false}\n');
 
 	try {
 		await withAgentDir(agentDir, async () => {
@@ -562,7 +443,6 @@ test("a reload failure does not lose a committed toggle", async () => {
 			yolo.handlers.get("session_start")!({}, yolo.ctx);
 			await yolo.command("on");
 
-			assert.equal(readConfig(nativeConfigPath).yoloMode, true);
 			assert.equal(
 				JSON.parse(
 					readFileSync(statePath(agentDir, "reload-failure-session"), "utf8"),
@@ -581,18 +461,13 @@ test("a reload failure does not lose a committed toggle", async () => {
 
 test("invalid command arguments do not change the session", async () => {
 	const agentDir = tempDir("pi-yolo-invalid-command-");
-	const nativeConfigPath = configPath(agentDir);
-	mkdirSync(join(agentDir, "extensions", "pi-permission-system"), {
-		recursive: true,
-	});
-	writeFileSync(nativeConfigPath, '{"yoloMode":false}\n');
 
 	try {
 		await withAgentDir(agentDir, async () => {
 			const yolo = setup(agentDir, "invalid-command-session");
 			yolo.handlers.get("session_start")!({}, yolo.ctx);
 			await yolo.command("maybe");
-			assert.equal(readConfig(nativeConfigPath).yoloMode, false);
+			assert.equal(yolo.status(), "YOLO: OFF");
 			assert.equal(yolo.reloads(), 0);
 			assert.deepEqual(yolo.notifications, ["Usage: /yolo [on|off]"]);
 		});

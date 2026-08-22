@@ -39,6 +39,14 @@ test("release tags resolve to the matching package version", () => {
 			workspace: "packages/lazy-skill-tool",
 		},
 	);
+	const yoloManifest = JSON.parse(
+		readFileSync("packages/yolo/package.json", "utf8"),
+	);
+	assert.deepEqual(resolveRelease(`pi-yolo-${yoloManifest.version}`), {
+		packageName: "@valdo766hi/pi-yolo",
+		version: yoloManifest.version,
+		workspace: "packages/yolo",
+	});
 });
 
 test("release tag resolution rejects unknown and malformed tags", () => {

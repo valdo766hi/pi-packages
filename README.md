@@ -47,9 +47,10 @@ git tag -a pi-lazy-skill-tool-0.1.1 -m "release: pi-lazy-skill-tool 0.1.1"
 git push origin main --follow-tags
 ```
 
-Use the corresponding workspace and tag for `fast`, `footer`, or `yolo`. The publish
-workflow validates the tag and publishes only the matching public package with
-npm trusted publishing and provenance.
+Use the corresponding workspace and tag for `fast`, `footer`, or `yolo`. The
+publish workflow validates the tag, publishes only the matching public package
+with npm trusted publishing and provenance, and creates the matching GitHub
+Release with generated notes.
 
 ## License
 

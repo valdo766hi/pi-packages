@@ -6,7 +6,7 @@ on:
       - "pi-*-*.*.*"
 
 permissions:
-  contents: read
+  contents: write
   id-token: write
 
 jobs:
@@ -28,6 +28,7 @@ jobs:
       - name: Validate package and tag
         run: npm run check
       - name: Publish package
+        id: package
         shell: bash
         run: |
           release="$(node scripts/resolve-release.mjs "$GITHUB_REF_NAME")"
@@ -35,4 +36,19 @@ jobs:
           package_name="$(node -e 'console.log(JSON.parse(process.argv[1]).packageName)' "$release")"
           version="$(node -e 'console.log(JSON.parse(process.argv[1]).version)' "$release")"
           echo "Publishing ${package_name}@${version}"
+          echo "package_name=${package_name}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
           npm publish --workspace="$workspace" --provenance --access public
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "GitHub release $GITHUB_REF_NAME already exists; leaving it unchanged."
+            exit 0
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --title "${{ steps.package.outputs.package_name }}@${{ steps.package.outputs.version }}" \
+            --generate-notes

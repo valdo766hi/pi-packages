@@ -2,12 +2,14 @@ import { opendir } from "node:fs/promises";
 import type { Dirent } from "node:fs";
 import { join, resolve } from "node:path";
 
-const MAX_DIRECTORIES_VISITED = 512;
+const MAX_DIRECTORIES_VISITED = 64;
 const MAX_ENTRIES_PER_DIRECTORY = 1024;
+const SKIPPED_DIRECTORIES = new Set([".git", "node_modules"]);
 
 export interface RelatedFilesResult {
 	readonly files: readonly string[];
 	readonly truncated: boolean;
+	readonly directoriesVisited: number;
 }
 
 function throwIfAborted(signal: AbortSignal | undefined): void {
@@ -32,12 +34,12 @@ async function readDirectoryEntries(
 		handle = await opendir(directory, { encoding: "utf8" });
 		while (true) {
 			throwIfAborted(signal);
-			const entry = await handle.read();
-			if (entry === null) break;
 			if (entries.length >= MAX_ENTRIES_PER_DIRECTORY) {
 				truncated = true;
 				break;
 			}
+			const entry = await handle.read();
+			if (entry === null) break;
 			entries.push(entry);
 		}
 	} catch (error) {
@@ -58,13 +60,38 @@ async function readDirectoryEntries(
 	return { entries, truncated };
 }
 
+function hasRelatedEntry(
+	entries: readonly Dirent<string>[],
+	start: number,
+	directory: string,
+	primary: string,
+): boolean {
+	for (let index = start; index < entries.length; index += 1) {
+		const entry = entries[index];
+		if (!entry || entry.isSymbolicLink() || entry.name.startsWith(".")) {
+			continue;
+		}
+		if (entry.isDirectory() && !SKIPPED_DIRECTORIES.has(entry.name)) return true;
+		if (
+			entry.isFile() &&
+			entry.name !== "SKILL.md" &&
+			resolve(join(directory, entry.name)) !== primary
+		) {
+			return true;
+		}
+	}
+	return false;
+}
+
 export async function sampleRelatedFiles(
 	baseDir: string,
 	primaryFile: string,
 	limit: number,
 	signal?: AbortSignal,
 ): Promise<RelatedFilesResult> {
-	if (limit === 0) return { files: [], truncated: false };
+	if (limit === 0) {
+		return { files: [], truncated: false, directoriesVisited: 0 };
+	}
 
 	const primary = resolve(primaryFile);
 	const queue = [resolve(baseDir)];
@@ -72,7 +99,7 @@ export async function sampleRelatedFiles(
 	let visitedDirectories = 0;
 	let truncated = false;
 
-	while (queue.length > 0) {
+	search: while (queue.length > 0) {
 		throwIfAborted(signal);
 		if (visitedDirectories >= MAX_DIRECTORIES_VISITED) {
 			truncated = true;
@@ -85,12 +112,13 @@ export async function sampleRelatedFiles(
 
 		const directoryEntries = await readDirectoryEntries(directory, signal);
 		truncated ||= directoryEntries.truncated;
-		for (const entry of directoryEntries.entries) {
+		for (const [index, entry] of directoryEntries.entries.entries()) {
 			throwIfAborted(signal);
-			if (entry.isSymbolicLink()) continue;
+			if (entry.isSymbolicLink() || entry.name.startsWith(".")) continue;
 
 			const entryPath = join(directory, entry.name);
 			if (entry.isDirectory()) {
+				if (SKIPPED_DIRECTORIES.has(entry.name)) continue;
 				if (visitedDirectories + queue.length < MAX_DIRECTORIES_VISITED) {
 					queue.push(entryPath);
 				} else {
@@ -107,15 +135,21 @@ export async function sampleRelatedFiles(
 				continue;
 			}
 
-			if (files.length >= limit) {
-				truncated = true;
-				break;
-			}
 			files.push(entryPath);
+			if (files.length < limit) continue;
+
+			const hasUnvisitedEntries = hasRelatedEntry(
+				directoryEntries.entries,
+				index + 1,
+				directory,
+				primary,
+			);
+			if (hasUnvisitedEntries || queue.length > 0) truncated = true;
+			break search;
 		}
 	}
 
 	if (queue.length > 0) truncated = true;
 	files.sort((a, b) => a.localeCompare(b));
-	return { files, truncated };
+	return { files, truncated, directoriesVisited: visitedDirectories };
 }

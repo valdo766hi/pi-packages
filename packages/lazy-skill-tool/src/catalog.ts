@@ -1,8 +1,8 @@
 import type { Skill } from "@earendil-works/pi-coding-agent";
 import { isAbsolute } from "node:path";
 
-export const DEFAULT_DESCRIPTION_MAX = 240;
-export const DEFAULT_FILE_LIMIT = 10;
+export const DEFAULT_DESCRIPTION_MAX = 0;
+export const DEFAULT_FILE_LIMIT = 0;
 const MAX_DESCRIPTION_MAX = 1024;
 const MAX_FILE_LIMIT = 50;
 
@@ -152,17 +152,12 @@ export function renderCompactCatalog(
 		.toSorted((a, b) => a.name.localeCompare(b.name));
 
 	return [
-		"The following skills provide specialized instructions for specific tasks.",
-		"When a task matches a skill's description, use the `skill` tool with that exact skill name before proceeding.",
-		"When a skill references a relative path, resolve it from the base directory returned by the `skill` tool.",
-		"",
+		"Load matching skills with the `skill` tool by exact name. Resolve relative paths from the returned base directory.",
 		"<available_skills>",
-		...sorted.flatMap((skill) => [
-			"  <skill>",
-			`    <name>${escapeXml(skill.name)}</name>`,
-			`    <description>${escapeXml(compactDescription(skill.description, config.descriptionMax))}</description>`,
-			"  </skill>",
-		]),
+		...sorted.map(
+			(skill) =>
+				`<skill><name>${escapeXml(skill.name)}</name><description>${escapeXml(compactDescription(skill.description, config.descriptionMax))}</description></skill>`,
+		),
 		"</available_skills>",
 	].join("\n");
 }

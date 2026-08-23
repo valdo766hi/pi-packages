@@ -19,7 +19,9 @@ full catalog cost is paid on every run.
 
 This extension keeps model-side skill discovery while moving the full load to
 an explicit tool call. Skill bodies are not added to context until the model
-selects that exact skill.
+selects that exact skill. Pi still reads skill files during canonical discovery
+to extract frontmatter; “lazy” here means model-context injection, not startup
+filesystem discovery.
 
 ## Architecture
 
@@ -40,7 +42,7 @@ current skill snapshot
           SKILL.md
              │
              ▼
- body + baseDir + sampled resources
+ body + baseDir + optional resource sample
 ```
 
 The tool is registered once when the extension initializes. Each
@@ -51,6 +53,10 @@ refreshes cannot leave the model-facing catalog and tool state out of sync. If
 Pi has disabled the `skill` tool, the extension leaves the native prompt alone;
 if `skill` is active without `read`, it appends the compact catalog instead of
 trying to rewrite a missing native section.
+
+Use only one extension that registers a tool named `skill`. Pi resolves duplicate
+tool names by load order, but does not expose enough ownership information here
+to guarantee that this extension rewrites the prompt for the winning provider.
 
 ## Prior art
 
@@ -63,8 +69,8 @@ single-tool progressive-disclosure model.
 
 This implementation is independent and intentionally differs by separating
 static tool registration from dynamic catalog state, handling empty refreshes,
-using a bounded prompt transformer, loading files asynchronously, sampling
-nearby resources, and testing lifecycle/security behavior.
+using a bounded prompt transformer, loading files asynchronously, making nearby
+resource sampling opt-in, and testing lifecycle/security behavior.
 
 The lazy-loading behavior is also informed by
 [OpenCode's skill tool](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/tool/skill.ts).
@@ -81,8 +87,9 @@ pi install npm:@valdo766hi/pi-lazy-skill-tool
 
 [View this package on npm](https://www.npmjs.com/package/@valdo766hi/pi-lazy-skill-tool)
 
-The package requires Pi `@earendil-works/pi-coding-agent` `>=0.69.0 <1.0.0`
-and `typebox` `>=1.3.7 <2.0.0`. It was tested with Pi
+The package requires Node.js `>=22.19.0`, Pi
+`@earendil-works/pi-coding-agent` `>=0.84.2 <0.85.0`, and `typebox`
+`>=1.3.7 <2.0.0`. It is tested with Pi
 `@earendil-works/pi-coding-agent@0.84.2`. The test harness uses Pi's canonical
 `loadSkillsFromDir` and `formatSkillsForPrompt` functions before exercising the
 extension lifecycle.
@@ -96,13 +103,16 @@ All settings are read when the extension loads:
 
 | Variable | Default | Valid range / behavior |
 | --- | ---: | --- |
-| `PI_LAZY_SKILL_DESCRIPTION_MAX` | `240` | `0` disables truncation; otherwise `0..1024`. Long descriptions are normalized and shortened at a word boundary with one ellipsis. |
-| `PI_LAZY_SKILL_FILE_LIMIT` | `10` | `0..50` related files. |
+| `PI_LAZY_SKILL_DESCRIPTION_MAX` | `0` | `0` preserves the complete description; `1..1024` opts into shortening at a word boundary with one ellipsis. |
+| `PI_LAZY_SKILL_FILE_LIMIT` | `0` | `0` skips directory traversal; `1..50` adds a bounded related-file sample. |
 | `PI_LAZY_SKILL_DISABLE` | unset | `1`, `true`, or `yes` disables this extension and leaves Pi's native skill behavior unchanged. |
 
-Invalid numeric values fall back to their defaults and emit one warning. The
-file sampler also stops after a bounded directory traversal and never follows
-symbolic-link directories.
+Invalid numeric values fall back to their defaults and emit one warning. When
+enabled, the sampler stops as soon as its result budget is filled, visits at
+most 64 directories, reads at most 1024 entries per directory, skips hidden
+entries, `.git`, and `node_modules`, and never follows child symbolic-link
+entries. A symlink supplied by Pi as the skill's root is still opened as the
+root; project trust and root provenance remain Pi's responsibility.
 
 ## Loading behavior
 
@@ -114,17 +124,43 @@ The model can provide only an exact skill name:
 
 The extension never turns that name into a filesystem path. It looks up the
 name in Pi's current canonical registry and reads only the `filePath` supplied
-by Pi. Unknown names, path-like names, disabled skills, missing files, invalid
-frontmatter, and aborted calls fail cleanly.
+by Pi. Unknown input—including unknown path-like input—has no filesystem
+semantics. Disabled skills, missing files, changed names, malformed or
+unterminated frontmatter, invalid UTF-8, empty instructions, and aborted calls
+fail cleanly. Pi remains authoritative if it canonically discovers a
+non-standard but exact skill name.
 
 A successful result contains:
 
-- the frontmatter-free `SKILL.md` body;
-- the skill base directory for resolving relative references;
-- a sorted, bounded sample of nearby files, excluding `SKILL.md`. Directory
-  enumeration is capped and filesystem order is not treated as deterministic.
-- skill bodies larger than 50 KiB are rejected before parsing to keep one tool
-  call from consuming unbounded memory or context.
+- the validated raw `SKILL.md`, including standard frontmatter such as
+  `compatibility`, `allowed-tools`, and `metadata`;
+- the canonical skill file and base directory for resolving relative references;
+- when explicitly configured, a sorted and bounded sample of nearby files,
+  excluding `SKILL.md`; the default performs no directory traversal.
+
+Descriptions are complete by default so late trigger phrases remain available for
+routing. Skill-file output uses Pi's regular read limits: 2,000 lines or 50 KiB
+per call. A large skill is not rejected. The result provides the next source line,
+and the model continues with the same tool:
+
+```json
+{"name":"large-skill","offset":321}
+```
+
+The loader uses Pi's exported truncation implementation, so ordinary chunk
+boundaries match regular `read` behavior. The raw source chunk is returned as its
+own unmodified text item; escaped path and continuation metadata are separate, so
+source such as `]]>` cannot be rewritten or inflate through wrapper escaping. It
+reads and validates the current full skill file before returning a bounded chunk,
+just as Pi discovery and regular file loading read the source before limiting
+model-facing output. If one source line
+alone exceeds 50 KiB, the same `skill` tool returns bounded UTF-8-safe segments and
+adds a `column` continuation automatically; this also works when `read` and `bash`
+are disabled:
+
+```json
+{"name":"large-skill","offset":321,"column":25001}
+```
 
 Skills with `disable-model-invocation: true` are omitted from the compact
 catalog and cannot be loaded through this tool. Pi's explicit `/skill:name`
@@ -143,9 +179,12 @@ npm run pack:check
 npm run benchmark:lazy-skills
 ```
 
-The benchmark compares the UTF-8 bytes and characters of the stock and compact
-representations using the checked-in fixture skills. It reports measurements
-only; no universal token-saving claim is made.
+The benchmark compares compact catalog bytes with Pi's real
+`formatSkillsForPrompt()` output for fixture and scaled synthetic catalogs. These
+are catalog-only byte counts; they do not include the additional tool schema. It
+also reports warm p50/p95 load timings for raw reads, the default no-sampling
+path, and opt-in sampling. Timing is machine-specific and byte reduction is not
+a universal token-saving claim.
 
 ## License
 

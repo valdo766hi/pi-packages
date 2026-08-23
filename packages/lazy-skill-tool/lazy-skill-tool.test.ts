@@ -1,11 +1,20 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import {
+	mkdir,
+	mkdtemp,
+	readFile,
+	rm,
+	symlink,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { afterEach, test } from "node:test";
 import {
 	formatSkillsForPrompt,
 	loadSkillsFromDir,
+	parseFrontmatter,
+	truncateHead,
 } from "@earendil-works/pi-coding-agent";
 import type {
 	BeforeAgentStartEvent,
@@ -26,10 +35,11 @@ import {
 	type RuntimeSkill,
 } from "./src/catalog.ts";
 import { sampleRelatedFiles } from "./src/files.ts";
-import { loadSkill, MAX_SKILL_BYTES } from "./src/loader.ts";
+import { loadSkill, MAX_SKILL_BYTES, MAX_SKILL_LINES } from "./src/loader.ts";
 import { appendSkillCatalog, transformSkillPrompt } from "./src/prompt.ts";
 
 const FIXTURE_ROOT = resolve("test/fixtures/lazy-skills");
+const REAL_WORLD_FIXTURE_ROOT = resolve("test/fixtures/lazy-real-world");
 const CONFIG = {
 	descriptionMax: DEFAULT_DESCRIPTION_MAX,
 	fileLimit: DEFAULT_FILE_LIMIT,
@@ -121,7 +131,10 @@ test("catalog builds a fresh deterministic registry", () => {
 	assert.notEqual(registry.get("zeta"), first);
 });
 
-test("catalog config validates bounds and supports no truncation", () => {
+test("catalog config preserves complete descriptions and defaults to no sampling", () => {
+	assert.equal(readConfig({}).config.descriptionMax, 0);
+	assert.equal(readConfig({}).config.fileLimit, 0);
+
 	const result = readConfig({
 		PI_LAZY_SKILL_DESCRIPTION_MAX: "0",
 		PI_LAZY_SKILL_FILE_LIMIT: "50",
@@ -174,14 +187,92 @@ test("compact catalog is sorted, escaped, and hides disabled skills", () => {
 	);
 
 	assert.ok(
-		catalog.indexOf("<name>alpha</name>") <
-			catalog.indexOf("<name>zeta</name>"),
+		catalog.indexOf("<name>alpha</name>") < catalog.indexOf("<name>zeta</name>"),
 	);
 	assert.ok(catalog.includes("Alpha &lt;details&gt;"));
 	assert.ok(catalog.includes("Zeta &amp; details"));
 	assert.ok(catalog.includes("<name>a&amp;b</name>"));
 	assert.ok(!catalog.includes("hidden"));
 	assert.ok(!catalog.includes("/test/fixtures"));
+	assert.ok(!catalog.includes("  <skill>"));
+	assert.match(
+		catalog,
+		/<skill><name>alpha<\/name><description>[^\n]+<\/description><\/skill>/u,
+	);
+});
+
+test("compact catalogs meet deterministic byte-reduction budgets", () => {
+	const fixtureSkills = loadSkillsFromDir({
+		dir: FIXTURE_ROOT,
+		source: "byte-budget",
+	}).skills;
+	const fixtureNative = formatSkillsForPrompt(fixtureSkills);
+	const fixtureCompact = renderCompactCatalog(fixtureSkills, CONFIG);
+	assert.ok(
+		Buffer.byteLength(fixtureCompact) <= Buffer.byteLength(fixtureNative) * 0.55,
+	);
+
+	for (const count of [10, 50, 100]) {
+		const skills = Array.from({ length: count }, (_, index) =>
+			makeSkill(
+				`skill-${String(index).padStart(3, "0")}`,
+				`Use this skill for focused workflow ${index}, validation, and related project tasks.`,
+			),
+		);
+		const nativeCatalog = formatSkillsForPrompt(skills);
+		const compactCatalog = renderCompactCatalog(skills, CONFIG);
+		assert.ok(
+			Buffer.byteLength(compactCatalog) <= Buffer.byteLength(nativeCatalog) * 0.7,
+			`compact ${count}-skill catalog exceeded its byte budget`,
+		);
+	}
+});
+
+test("real-world skill preserves late routing triggers and complete instructions", async () => {
+	const discovered = loadSkillsFromDir({
+		dir: REAL_WORLD_FIXTURE_ROOT,
+		source: "real-world-test",
+	});
+	assert.deepEqual(discovered.diagnostics, []);
+	assert.equal(discovered.skills.length, 1);
+	const skill = discovered.skills[0];
+	assert.ok(skill);
+	assert.ok(skill.description.length > 240);
+	const lateTrigger = "investigate a real production incident";
+	assert.ok(skill.description.includes(lateTrigger));
+
+	const catalog = renderCompactCatalog(discovered.skills, CONFIG);
+	assert.ok(catalog.includes(lateTrigger));
+	const optInTruncatedCatalog = renderCompactCatalog(discovered.skills, {
+		descriptionMax: 240,
+	});
+	assert.ok(!optInTruncatedCatalog.includes(lateTrigger));
+
+	const source = await readFile(skill.filePath, "utf8");
+	assert.ok(Buffer.byteLength(source) > 9_000);
+	const frontmatter =
+		parseFrontmatter<Record<string, unknown>>(source).frontmatter;
+	assert.equal(
+		frontmatter.compatibility,
+		"Requires access to retained production telemetry and an incident timeline; never mutates production without explicit approval.",
+	);
+	assert.equal(frontmatter["allowed-tools"], "read bash");
+	assert.deepEqual(frontmatter.metadata, {
+		workflow: "incident-response",
+		safety: "approval-required",
+	});
+	const loaded = await loadSkill(skill as RuntimeSkill, DEFAULT_FILE_LIMIT);
+	assert.equal(loaded.body, source);
+	assert.equal(loaded.bodyTruncation.truncated, false);
+	assert.equal(loaded.bodyOffset, 1);
+	assert.equal(loaded.bodyColumn, 1);
+	assert.equal(loaded.nextOffset, undefined);
+
+	const sampled = await loadSkill(skill as RuntimeSkill, 10);
+	assert.deepEqual(
+		sampled.relatedFiles.files.map((file) => relative(skill.baseDir, file)),
+		["references/severity.md", "templates/status-update.md"],
+	);
 });
 
 test("prompt transformation replaces only the bounded native skill section", () => {
@@ -196,7 +287,7 @@ test("prompt transformation replaces only the bounded native skill section", () 
 	assert.ok(!result.prompt.includes("/private/native/SKILL.md"));
 	assert.ok(!result.prompt.includes("# Alpha"));
 	assert.ok(!result.prompt.includes("Use the read tool"));
-	assert.ok(result.prompt.includes("use the `skill` tool"));
+	assert.ok(result.prompt.includes("with the `skill` tool"));
 	assert.equal(
 		transformSkillPrompt(result.prompt, [alpha], CONFIG).prompt,
 		result.prompt,
@@ -299,16 +390,23 @@ test("prompt transformation fails safely when tags are missing or incomplete", (
 	assert.equal(customOnly.warning, undefined);
 });
 
-test("fixture skill loads body and bounded related files without following symlink directories", async () => {
+test("loader defaults to no sampling and can list fixture resources", async () => {
 	const alpha = makeSkill(
 		"alpha",
 		"Alpha",
 		join(FIXTURE_ROOT, "alpha", "SKILL.md"),
 		join(FIXTURE_ROOT, "alpha"),
 	);
+	const noSample = await loadSkill(
+		alpha as unknown as RuntimeSkill,
+		DEFAULT_FILE_LIMIT,
+	);
+	assert.deepEqual(noSample.relatedFiles.files, []);
+	assert.equal(noSample.relatedFiles.directoriesVisited, 0);
+
 	const loaded = await loadSkill(alpha as unknown as RuntimeSkill, 10);
 	assert.ok(loaded.body.includes("# Alpha"));
-	assert.ok(!loaded.body.includes("name: alpha"));
+	assert.ok(loaded.body.includes("name: alpha"));
 	assert.deepEqual(
 		loaded.relatedFiles.files.map((file) =>
 			relative(join(FIXTURE_ROOT, "alpha"), file),
@@ -319,7 +417,9 @@ test("fixture skill loads body and bounded related files without following symli
 		loaded.relatedFiles.files.some((file) => file.endsWith("SKILL.md")),
 		false,
 	);
+});
 
+test("sampler skips hidden, dependency, and symlink entries", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "pi-lazy-files-"));
 	temporaryDirectories.push(directory);
 	await writeFile(
@@ -334,6 +434,7 @@ test("fixture skill loads body and bounded related files without following symli
 		1,
 	);
 	assert.equal(exact.truncated, false);
+	assert.equal(exact.directoriesVisited, 2);
 	const missingDirectory = await sampleRelatedFiles(
 		join(directory, "missing"),
 		join(directory, "missing", "SKILL.md"),
@@ -348,6 +449,37 @@ test("fixture skill loads body and bounded related files without following symli
 	);
 	assert.deepEqual(sampled.files, [join(directory, "real", "one.txt")]);
 
+	const linkedRoot = `${directory}-root-link`;
+	temporaryDirectories.push(linkedRoot);
+	await symlink(directory, linkedRoot, "dir");
+	const rootSample = await sampleRelatedFiles(
+		linkedRoot,
+		join(linkedRoot, "SKILL.md"),
+		10,
+	);
+	assert.deepEqual(rootSample.files, [join(linkedRoot, "real", "one.txt")]);
+
+	const skippedDirectory = await mkdtemp(join(tmpdir(), "pi-lazy-skipped-"));
+	temporaryDirectories.push(skippedDirectory);
+	await writeFile(join(skippedDirectory, "SKILL.md"), "primary\n");
+	await mkdir(join(skippedDirectory, ".hidden"));
+	await writeFile(join(skippedDirectory, ".hidden", "secret.txt"), "secret");
+	await mkdir(join(skippedDirectory, "node_modules"));
+	await writeFile(join(skippedDirectory, "node_modules", "package.js"), "pkg");
+	await mkdir(join(skippedDirectory, "z-deep"));
+	await writeFile(join(skippedDirectory, "z-deep", "later.txt"), "later");
+	await writeFile(join(skippedDirectory, "a-visible.txt"), "visible");
+	const stopped = await sampleRelatedFiles(
+		skippedDirectory,
+		join(skippedDirectory, "SKILL.md"),
+		1,
+	);
+	assert.deepEqual(stopped.files, [join(skippedDirectory, "a-visible.txt")]);
+	assert.equal(stopped.directoriesVisited, 1);
+	assert.equal(stopped.truncated, true);
+});
+
+test("sampler bounds wide traversal and preserves cancellation", async () => {
 	const limited = await sampleRelatedFiles(
 		FIXTURE_ROOT,
 		join(FIXTURE_ROOT, "alpha", "SKILL.md"),
@@ -371,6 +503,7 @@ test("fixture skill loads body and bounded related files without following symli
 	const bounded = await sampleRelatedFiles(hugeDirectory, hugePrimary, 1);
 	assert.equal(bounded.files.length, 1);
 	assert.equal(bounded.truncated, true);
+	assert.equal(bounded.directoriesVisited, 1);
 
 	const controller = new AbortController();
 	const pending = sampleRelatedFiles(
@@ -384,6 +517,45 @@ test("fixture skill loads body and bounded related files without following symli
 		pending,
 		(error: unknown) => error instanceof Error && error.name === "AbortError",
 	);
+});
+
+test("loader mirrors Pi fallback-name semantics after file changes", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "pi-lazy-fallback-name-"));
+	temporaryDirectories.push(directory);
+
+	const aliasDirectory = join(directory, "alpha");
+	await mkdir(aliasDirectory);
+	const aliasPath = join(aliasDirectory, "SKILL.md");
+	await writeFile(aliasPath, "---\ndescription: alias removed\n---\nbody\n");
+	await assert.rejects(
+		loadSkill(
+			makeSkill(
+				"custom",
+				"alias removed",
+				aliasPath,
+				aliasDirectory,
+			) as unknown as RuntimeSkill,
+			0,
+		),
+		/invalid frontmatter/,
+	);
+
+	const fallbackDirectory = join(directory, "fallback");
+	await mkdir(fallbackDirectory);
+	const fallbackPath = join(fallbackDirectory, "SKILL.md");
+	const fallbackSkill = makeSkill(
+		"fallback",
+		"fallback",
+		fallbackPath,
+		fallbackDirectory,
+	) as unknown as RuntimeSkill;
+	const fallbackSource = "---\ndescription: fallback\n---\nbody\n";
+	await writeFile(fallbackPath, fallbackSource);
+	assert.equal((await loadSkill(fallbackSkill, 0)).body, fallbackSource);
+
+	const emptyNameSource = '---\nname: ""\ndescription: fallback\n---\nbody\n';
+	await writeFile(fallbackPath, emptyNameSource);
+	assert.equal((await loadSkill(fallbackSkill, 0)).body, emptyNameSource);
 });
 
 test("loader errors are concise and cancellation is preserved", async () => {
@@ -415,22 +587,127 @@ test("loader errors are concise and cancellation is preserved", async () => {
 		/invalid frontmatter/,
 	);
 
-	const oversizedPath = join(directory, "oversized.md");
+	const unterminatedPath = join(directory, "unterminated.md");
 	await writeFile(
-		oversizedPath,
-		`---\nname: oversized\ndescription: oversized\n---\n${"x".repeat(MAX_SKILL_BYTES)}`,
+		unterminatedPath,
+		"---\nname: unterminated\ndescription: broken\nbody\n",
 	);
 	await assert.rejects(
 		loadSkill(
 			makeSkill(
-				"oversized",
-				"oversized",
-				oversizedPath,
+				"unterminated",
+				"broken",
+				unterminatedPath,
 				directory,
 			) as unknown as RuntimeSkill,
-			10,
+			0,
 		),
-		/exceeds the .*byte limit/,
+		/invalid frontmatter/,
+	);
+
+	const mismatchedPath = join(directory, "mismatched.md");
+	await writeFile(
+		mismatchedPath,
+		"---\nname: renamed\ndescription: changed\n---\nbody\n",
+	);
+	await assert.rejects(
+		loadSkill(
+			makeSkill(
+				"original",
+				"changed",
+				mismatchedPath,
+				directory,
+			) as unknown as RuntimeSkill,
+			0,
+		),
+		/invalid frontmatter/,
+	);
+
+	const unavailablePath = join(directory, "unavailable.md");
+	await writeFile(
+		unavailablePath,
+		"---\nname: unavailable\ndescription: changed\ndisable-model-invocation: true\n---\nbody\n",
+	);
+	await assert.rejects(
+		loadSkill(
+			makeSkill(
+				"unavailable",
+				"changed",
+				unavailablePath,
+				directory,
+			) as unknown as RuntimeSkill,
+			0,
+		),
+		/no longer available/,
+	);
+
+	const emptyPath = join(directory, "empty.md");
+	await writeFile(emptyPath, "---\nname: empty\ndescription: empty\n---\n\n");
+	await assert.rejects(
+		loadSkill(
+			makeSkill("empty", "empty", emptyPath, directory) as unknown as RuntimeSkill,
+			0,
+		),
+		/has no instructions/,
+	);
+
+	const invalidUtf8Path = join(directory, "invalid-utf8.md");
+	await writeFile(invalidUtf8Path, Buffer.from([0xff, 0xfe, 0xfd]));
+	await assert.rejects(
+		loadSkill(
+			makeSkill(
+				"invalid-utf8",
+				"invalid",
+				invalidUtf8Path,
+				directory,
+			) as unknown as RuntimeSkill,
+			0,
+		),
+		/not valid UTF-8/,
+	);
+
+	const oversizedPath = join(directory, "oversized.md");
+	const largeBody = Array.from(
+		{ length: 700 },
+		(_, index) =>
+			`## Verification checkpoint ${String(index + 1).padStart(3, "0")}: compare customer-impact metrics with the known-good cohort, record UTC evidence, and stop before any unapproved production mutation.`,
+	).join("\n");
+	assert.ok(Buffer.byteLength(largeBody) > MAX_SKILL_BYTES);
+	const largeSource = `---\nname: oversized\ndescription: oversized\n---\n${largeBody}`;
+	await writeFile(oversizedPath, largeSource);
+	const oversizedSkill = makeSkill(
+		"oversized",
+		"oversized",
+		oversizedPath,
+		directory,
+	) as unknown as RuntimeSkill;
+	const expectedFirstChunk = truncateHead(largeSource);
+	const firstChunk = await loadSkill(oversizedSkill, 0);
+	assert.equal(firstChunk.body, expectedFirstChunk.content);
+	assert.equal(firstChunk.bodyTruncation.truncated, true);
+	assert.equal(firstChunk.nextOffset, expectedFirstChunk.outputLines + 1);
+	assert.ok(firstChunk.nextOffset);
+
+	const sourceLines = largeSource.split("\n");
+	const chunks = [firstChunk.body];
+	let chunk = firstChunk;
+	let continuationCount = 0;
+	while (chunk.nextOffset !== undefined) {
+		const offset = chunk.nextOffset;
+		const remainingSource = sourceLines.slice(offset - 1).join("\n");
+		chunk = await loadSkill(oversizedSkill, 0, undefined, offset);
+		assert.equal(chunk.body, truncateHead(remainingSource).content);
+		assert.equal(chunk.bodyOffset, offset);
+		assert.equal(chunk.bodyColumn, 1);
+		chunks.push(chunk.body);
+		continuationCount += 1;
+		assert.ok(continuationCount < 10, "large skill continuation did not finish");
+	}
+	assert.equal(chunks.join("\n"), largeSource);
+	assert.equal(chunk.bodyTruncation.truncated, false);
+	await assert.rejects(
+		loadSkill(oversizedSkill, 0, undefined, sourceLines.length + 1),
+		/beyond its 704 file lines/,
 	);
 
 	const controller = new AbortController();
@@ -466,6 +743,95 @@ test("loader errors are concise and cancellation is preserved", async () => {
 	);
 });
 
+test("loader matches Pi's 2,000-line boundary with exact continuation", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "pi-lazy-line-limit-"));
+	temporaryDirectories.push(directory);
+	const filePath = join(directory, "SKILL.md");
+	const sourceLines = [
+		"---",
+		"name: line-limit",
+		"description: line limit parity",
+		"---",
+		...Array.from(
+			{ length: MAX_SKILL_LINES + 50 },
+			(_, index) => `step-${index + 1}`,
+		),
+	];
+	const source = sourceLines.join("\n");
+	await writeFile(filePath, source);
+	const skill = makeSkill(
+		"line-limit",
+		"line limit parity",
+		filePath,
+		directory,
+	) as unknown as RuntimeSkill;
+
+	const first = await loadSkill(skill, 0);
+	assert.equal(first.bodyTruncation.truncatedBy, "lines");
+	assert.equal(first.bodyTruncation.outputLines, MAX_SKILL_LINES);
+	assert.equal(first.nextOffset, MAX_SKILL_LINES + 1);
+	const second = await loadSkill(skill, 0, undefined, first.nextOffset);
+	assert.equal(second.body, sourceLines.slice(MAX_SKILL_LINES).join("\n"));
+	assert.equal(second.bodyTruncation.truncated, false);
+});
+
+test("loader makes progress through one instruction line larger than 50 KiB", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "pi-lazy-long-line-"));
+	temporaryDirectories.push(directory);
+	const filePath = join(directory, "SKILL.md");
+	const giantLine = "verify-🔥-evidence;".repeat(8_000);
+	const sourceLines = [
+		"---",
+		"name: long-line",
+		"description: oversized line parity",
+		"---",
+		giantLine,
+		"Final instruction after the oversized line.",
+	];
+	await writeFile(filePath, sourceLines.join("\n"));
+	const skill = makeSkill(
+		"long-line",
+		"oversized line parity",
+		filePath,
+		directory,
+	) as unknown as RuntimeSkill;
+
+	const prelude = await loadSkill(skill, 0);
+	assert.equal(prelude.nextOffset, 5);
+	assert.equal(prelude.nextColumn, 1);
+
+	let column = 1;
+	let reconstructedLine = "";
+	let calls = 0;
+	while (true) {
+		const chunk = await loadSkill(skill, 0, undefined, 5, column);
+		const newline = chunk.body.indexOf("\n");
+		if (newline !== -1) {
+			reconstructedLine += chunk.body.slice(0, newline);
+			assert.equal(
+				chunk.body.slice(newline + 1),
+				"Final instruction after the oversized line.",
+			);
+			assert.equal(chunk.nextOffset, undefined);
+			break;
+		}
+		reconstructedLine += chunk.body;
+		assert.equal(chunk.bodyTruncation.content, chunk.body);
+		assert.equal(
+			chunk.bodyTruncation.outputBytes,
+			Buffer.byteLength(chunk.body, "utf8"),
+		);
+		assert.equal(chunk.bodyTruncation.outputLines, 1);
+		assert.equal(chunk.bodyTruncation.lastLinePartial, true);
+		assert.equal(chunk.nextOffset, 5);
+		assert.ok((chunk.nextColumn ?? 0) > column);
+		column = chunk.nextColumn ?? 0;
+		calls += 1;
+		assert.ok(calls < 10, "oversized-line continuation did not progress");
+	}
+	assert.equal(reconstructedLine, giantLine);
+});
+
 type BeforeEvent = Pick<
 	BeforeAgentStartEvent,
 	"systemPrompt" | "systemPromptOptions"
@@ -475,7 +841,7 @@ type RegisteredTool = {
 	description: string;
 	execute: (
 		toolCallId: string,
-		params: { name: string },
+		params: { name: string; offset?: number; column?: number },
 		signal: AbortSignal | undefined,
 		onUpdate: unknown,
 		ctx: ExtensionContext,
@@ -520,6 +886,12 @@ function createHarness(): Harness {
 	};
 }
 
+function combinedText(result: {
+	content: Array<{ type: "text"; text: string }>;
+}): string {
+	return result.content.map((item) => item.text).join("\n");
+}
+
 test("Pi canonical discovery feeds the lazy prompt and tool harness", async () => {
 	const discovered = loadSkillsFromDir({ dir: FIXTURE_ROOT, source: "path" });
 	assert.deepEqual(discovered.skills.map((skill) => skill.name).sort(), [
@@ -556,6 +928,110 @@ test("Pi canonical discovery feeds the lazy prompt and tool harness", async () =
 	assert.ok(loaded.content[0]?.text.includes("# Alpha"));
 });
 
+test("real-world discovered skill routes and loads end to end without fidelity loss", async () => {
+	const discovered = loadSkillsFromDir({
+		dir: REAL_WORLD_FIXTURE_ROOT,
+		source: "real-world-harness",
+	});
+	const skill = discovered.skills[0];
+	assert.ok(skill);
+	const stockPrompt = formatSkillsForPrompt(discovered.skills);
+	const harness = createHarness();
+	const transformed = (await harness.before({
+		systemPrompt: stockPrompt,
+		systemPromptOptions: {
+			cwd: REAL_WORLD_FIXTURE_ROOT,
+			skills: discovered.skills,
+			selectedTools: ["skill"],
+		},
+	})) as { systemPrompt: string };
+	assert.ok(
+		transformed.systemPrompt.includes("investigate a real production incident"),
+	);
+
+	const expectedBody = await readFile(skill.filePath, "utf8");
+	const result = await harness.tool.execute(
+		"real-world",
+		{ name: skill.name },
+		undefined,
+		undefined,
+		{} as ExtensionContext,
+	);
+	const context = result.content[1]?.text ?? "";
+	assert.equal(result.content[0]?.text, expectedBody);
+	assert.ok(expectedBody.includes("compatibility: Requires access"));
+	assert.ok(expectedBody.includes("allowed-tools: read bash"));
+	assert.ok(context.includes(`Skill file: ${skill.filePath}`));
+	assert.ok(context.includes(`Base directory: ${skill.baseDir}`));
+	assert.equal(result.details.bodyTruncated, false);
+	assert.equal(result.details.bodyOffset, 1);
+});
+
+test("large skill instructions continue through the same tool at Pi read limits", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "pi-lazy-large-tool-"));
+	temporaryDirectories.push(directory);
+	const filePath = join(directory, "SKILL.md");
+	const lines = Array.from(
+		{ length: 700 },
+		(_, index) =>
+			`Checkpoint ${index + 1}: verify the affected customer cohort against a known-good baseline, preserve the UTC evidence link, and do not mutate production without explicit approval.`,
+	);
+	const source = `---\nname: large-real-workflow\ndescription: Load a large operational workflow\n---\n${lines.join("\n")}`;
+	const sourceLines = source.split("\n");
+	await writeFile(filePath, source);
+	const skill = makeSkill(
+		"large-real-workflow",
+		"Load a large operational workflow",
+		filePath,
+		directory,
+	);
+	const harness = createHarness();
+	await harness.before({
+		systemPrompt: nativePrompt([skill.name]),
+		systemPromptOptions: promptOptions([skill]),
+	});
+
+	const first = await harness.tool.execute(
+		"large-first",
+		{ name: skill.name },
+		undefined,
+		undefined,
+		{} as ExtensionContext,
+	);
+	const firstText = first.content[0]?.text ?? "";
+	assert.equal(first.details.bodyTruncated, true);
+	assert.equal(typeof first.details.nextOffset, "number");
+	assert.ok(firstText.includes(lines[0] ?? "missing first line"));
+	assert.ok(combinedText(first).includes("Continue with skill"));
+
+	let result = first;
+	let continuationCount = 0;
+	while (result.details.bodyTruncated === true) {
+		const nextOffset = result.details.nextOffset as number;
+		result = await harness.tool.execute(
+			"large-continuation",
+			{ name: skill.name, offset: nextOffset },
+			undefined,
+			undefined,
+			{} as ExtensionContext,
+		);
+		const text = result.content[0]?.text ?? "";
+		assert.ok(
+			text.includes(sourceLines[nextOffset - 1] ?? "missing continuation"),
+		);
+		assert.equal(result.details.bodyOffset, nextOffset);
+		assert.equal(result.details.directoriesVisited, 0);
+		continuationCount += 1;
+		assert.ok(continuationCount < 10, "tool continuation did not finish");
+	}
+	assert.ok(
+		(result.content[0]?.text ?? "").includes(
+			lines.at(-1) ?? "missing final line",
+		),
+	);
+	assert.equal(result.details.bodyTruncated, false);
+});
+
 test("extension registers one static tool and keeps prompt and registry synchronized", async () => {
 	const harness = createHarness();
 	assert.equal(harness.registerCount, 1);
@@ -580,7 +1056,9 @@ test("extension registers one static tool and keeps prompt and registry synchron
 		{} as ExtensionContext,
 	);
 	assert.ok(loaded.content[0]?.text.includes("# Alpha"));
-	assert.ok(loaded.content[0]?.text.includes("Base directory for this skill"));
+	assert.ok(loaded.content[1]?.text.includes("Base directory:"));
+	assert.ok(!combinedText(loaded).includes("<skill_files"));
+	assert.equal(loaded.details.directoriesVisited, 0);
 
 	const next = (await harness.before({
 		systemPrompt: nativePrompt(["beta"]),
@@ -646,14 +1124,74 @@ test("extension only rewrites prompts when its tool is active", async () => {
 	assert.equal(inactive, undefined);
 });
 
-test("tool output escapes dynamic XML fields", async () => {
+test("skill-only mode continues oversized lines without read or bash", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "pi-lazy-skill-only-line-"));
+	temporaryDirectories.push(directory);
+	const filePath = join(directory, "SKILL.md");
+	const giantLine = "customer-impact-🔥;".repeat(4_000);
+	await writeFile(
+		filePath,
+		[
+			"---",
+			"name: skill-only-long-line",
+			"description: skill-only oversized line",
+			"---",
+			giantLine,
+			"Safe final instruction.",
+		].join("\n"),
+	);
+	const skill = makeSkill(
+		"skill-only-long-line",
+		"skill-only oversized line",
+		filePath,
+		directory,
+	);
+	const harness = createHarness();
+	await harness.before({
+		systemPrompt: "Base prompt",
+		systemPromptOptions: promptOptions([skill], ["skill"]),
+	});
+
+	let result = await harness.tool.execute(
+		"skill-only-prelude",
+		{ name: skill.name },
+		undefined,
+		undefined,
+		{} as ExtensionContext,
+	);
+	assert.equal(result.details.nextOffset, 5);
+	let previousColumn = 0;
+	let calls = 0;
+	while (result.details.bodyTruncated === true) {
+		const nextOffset = result.details.nextOffset as number;
+		const nextColumn = result.details.nextColumn as number;
+		result = await harness.tool.execute(
+			"skill-only-continuation",
+			{ name: skill.name, offset: nextOffset, column: nextColumn },
+			undefined,
+			undefined,
+			{} as ExtensionContext,
+		);
+		const text = combinedText(result);
+		assert.ok(!text.includes("Use the read tool"));
+		assert.ok(!text.includes("Use bash"));
+		if (result.details.bodyTruncated === true) {
+			assert.equal(result.details.nextOffset, 5);
+			assert.ok((result.details.nextColumn as number) > previousColumn);
+			previousColumn = result.details.nextColumn as number;
+		}
+		calls += 1;
+		assert.ok(calls < 10, "skill-only oversized line did not finish");
+	}
+	assert.ok((result.content[0]?.text ?? "").includes("Safe final instruction."));
+});
+
+test("tool preserves raw skill source and escapes metadata fields", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "pi-lazy-&-"));
 	temporaryDirectories.push(directory);
 	const filePath = join(directory, "SKILL.md");
-	await writeFile(
-		filePath,
-		"---\nname: a&b\ndescription: special\n---\n# Special\n]]>\n",
-	);
+	const source = "---\nname: a&b\ndescription: special\n---\n# Special\n]]>\n";
+	await writeFile(filePath, source);
 	await writeFile(join(directory, "notes.md"), "notes\n");
 
 	const harness = createHarness();
@@ -669,17 +1207,106 @@ test("tool output escapes dynamic XML fields", async () => {
 		undefined,
 		{} as ExtensionContext,
 	);
-	const text = result.content[0]?.text ?? "";
-	assert.ok(text.includes('<skill_content name="a&amp;b">'));
-	assert.ok(text.includes("# Skill: a&amp;b"));
-	assert.ok(text.includes("]]></skill_body>"));
-	assert.ok(text.includes("]]]]><![CDATA[>"));
+	const context = result.content[1]?.text ?? "";
+	assert.equal(result.content[0]?.text, source);
+	assert.ok(context.includes('<skill_context name="a&amp;b"'));
 	assert.ok(
-		text.includes(
-			`Base directory for this skill: ${directory.replaceAll("&", "&amp;")}`,
-		),
+		context.includes(`Base directory: ${directory.replaceAll("&", "&amp;")}`),
 	);
-	assert.ok(text.includes("notes.md"));
+	assert.ok(!context.includes("notes.md"));
+	assert.ok(!context.includes("<skill_files"));
+});
+
+test("CDATA-like source stays exact and model-facing growth remains bounded", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "pi-lazy-cdata-limit-"));
+	temporaryDirectories.push(directory);
+	const filePath = join(directory, "SKILL.md");
+	const cdataTerminator = "]]>";
+	const giantLine = cdataTerminator.repeat(20_000);
+	await writeFile(
+		filePath,
+		[
+			"---",
+			"name: cdata-limit",
+			"description: preserve literal CDATA terminators",
+			"---",
+			giantLine,
+		].join("\n"),
+	);
+	const skill = makeSkill(
+		"cdata-limit",
+		"preserve literal CDATA terminators",
+		filePath,
+		directory,
+	);
+	const harness = createHarness();
+	await harness.before({
+		systemPrompt: nativePrompt([skill.name]),
+		systemPromptOptions: promptOptions([skill]),
+	});
+	const prelude = await harness.tool.execute(
+		"cdata-prelude",
+		{ name: skill.name },
+		undefined,
+		undefined,
+		{} as ExtensionContext,
+	);
+	const chunk = await harness.tool.execute(
+		"cdata-chunk",
+		{
+			name: skill.name,
+			offset: prelude.details.nextOffset as number,
+			column: prelude.details.nextColumn as number,
+		},
+		undefined,
+		undefined,
+		{} as ExtensionContext,
+	);
+	const rawChunk = chunk.content[0]?.text ?? "";
+	assert.ok(giantLine.startsWith(rawChunk));
+	assert.ok(rawChunk.includes(cdataTerminator));
+	assert.ok(!rawChunk.includes("]]]]><![CDATA[>"));
+	assert.ok(Buffer.byteLength(rawChunk) <= MAX_SKILL_BYTES);
+	assert.ok(Buffer.byteLength(combinedText(chunk)) <= MAX_SKILL_BYTES + 2_048);
+	assert.equal(chunk.details.bodyTruncated, true);
+});
+
+test("configured related-file sampling stays bounded and explicit", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "pi-lazy-output-files-"));
+	temporaryDirectories.push(directory);
+	const filePath = join(directory, "SKILL.md");
+	await writeFile(
+		filePath,
+		"---\nname: sampled\ndescription: sampled\n---\n# Sampled\n",
+	);
+	await writeFile(join(directory, "notes.md"), "notes\n");
+
+	const previous = process.env.PI_LAZY_SKILL_FILE_LIMIT;
+	process.env.PI_LAZY_SKILL_FILE_LIMIT = "1";
+	let harness: Harness;
+	try {
+		harness = createHarness();
+	} finally {
+		if (previous === undefined) delete process.env.PI_LAZY_SKILL_FILE_LIMIT;
+		else process.env.PI_LAZY_SKILL_FILE_LIMIT = previous;
+	}
+
+	const sampled = makeSkill("sampled", "sampled", filePath, directory);
+	await harness.before({
+		systemPrompt: nativePrompt(["sampled"]),
+		systemPromptOptions: promptOptions([sampled]),
+	});
+	const result = await harness.tool.execute(
+		"call",
+		{ name: "sampled" },
+		undefined,
+		undefined,
+		{} as ExtensionContext,
+	);
+	const text = result.content[1]?.text ?? "";
+	assert.ok(text.includes('<skill_files truncated="false">'));
+	assert.ok(text.includes(`<file>${join(directory, "notes.md")}</file>`));
+	assert.equal(result.details.directoriesVisited, 1);
 });
 
 test("model-disabled skills remain unavailable to the tool", async () => {

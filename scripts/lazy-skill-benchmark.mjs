@@ -2,6 +2,8 @@ import { readFile } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import { resolve } from "node:path";
 import {
+	createReadToolDefinition,
+	estimateTokens,
 	formatSkillsForPrompt,
 	loadSkillsFromDir,
 	parseFrontmatter,
@@ -39,6 +41,29 @@ const MEASURED_ITERATIONS = 500;
 
 function bytes(value) {
 	return Buffer.byteLength(value, "utf8");
+}
+
+function tokens(value) {
+	return estimateTokens({
+		role: "user",
+		content: [{ type: "text", text: value }],
+	});
+}
+
+function serializeToolDefinition(tool) {
+	return JSON.stringify({
+		name: tool.name,
+		description: tool.description,
+		parameters: tool.parameters,
+	});
+}
+
+function textBytes(result) {
+	return bytes(result.content.map((item) => item.text ?? "").join("\n"));
+}
+
+function textTokens(result) {
+	return tokens(result.content.map((item) => item.text ?? "").join("\n"));
 }
 
 function reduction(before, after) {
@@ -112,23 +137,34 @@ function createToolHarness() {
 	return { tool, before };
 }
 
+const harness = createToolHarness();
+const toolSchema = serializeToolDefinition(harness.tool);
+const toolSchemaBytes = bytes(toolSchema);
+const toolSchemaTokens = tokens(toolSchema);
+
 function catalogRow(label, catalogSkills) {
 	const nativeCatalog = formatSkillsForPrompt(catalogSkills);
 	const compactCatalog = renderCompactCatalog(catalogSkills, {
 		descriptionMax: DEFAULT_DESCRIPTION_MAX,
 	});
+	const nativeBytes = bytes(nativeCatalog);
+	const compactBytes = bytes(compactCatalog);
+	const lazyStaticBytes = compactBytes + toolSchemaBytes;
 	return {
 		label,
-		native: bytes(nativeCatalog),
-		compact: bytes(compactCatalog),
-		reduction: reduction(bytes(nativeCatalog), bytes(compactCatalog)),
+		native: nativeBytes,
+		compact: compactBytes,
+		lazyStatic: lazyStaticBytes,
+		nativeTokens: tokens(nativeCatalog),
+		lazyStaticTokens: tokens(compactCatalog) + toolSchemaTokens,
+		reduction: reduction(nativeBytes, lazyStaticBytes),
 	};
 }
 
 const catalogRows = [
 	catalogRow(`fixtures (${skills.length})`, skills),
 	catalogRow(`real-world (${realWorldSkills.length})`, realWorldSkills),
-	...[10, 50, 100].map((count) =>
+	...[1, 2, 5, 10, 20, 50, 100, 500, 1000].map((count) =>
 		catalogRow(`synthetic (${count})`, syntheticSkills(count)),
 	),
 ];
@@ -140,7 +176,6 @@ const defaultLoad = await measure(() =>
 	loadSkill(selectedSkill, DEFAULT_FILE_LIMIT),
 );
 const sampledLoad = await measure(() => loadSkill(selectedSkill, 10));
-const harness = createToolHarness();
 await harness.before({
 	systemPrompt: formatSkillsForPrompt(skills),
 	systemPromptOptions: {
@@ -155,19 +190,60 @@ const fullToolLoad = await measure(() =>
 const fullToolResult = await harness.tool.execute("benchmark", {
 	name: selectedSkill.name,
 });
-const fullToolBytes = bytes(
+const nativeReadTool = createReadToolDefinition(fixtureRoot);
+const nativeReadResult = await nativeReadTool.execute("benchmark", {
+	path: selectedSkill.filePath,
+});
+const nativeExchange = [
+	JSON.stringify({ path: selectedSkill.filePath }),
+	nativeReadResult.content.map((item) => item.text ?? "").join("\n"),
+].join("\n");
+const lazyExchange = [
+	JSON.stringify({ name: selectedSkill.name }),
 	fullToolResult.content.map((item) => item.text ?? "").join("\n"),
+].join("\n");
+const fullToolBytes = textBytes(fullToolResult);
+const selectedExchange = {
+	nativeBytes: bytes(nativeExchange),
+	lazyBytes: bytes(lazyExchange),
+	nativeTokens: tokens(nativeExchange),
+	lazyTokens: tokens(lazyExchange),
+};
+const fixtureStatic = catalogRows.find((row) =>
+	row.label.startsWith("fixtures"),
 );
+if (!fixtureStatic) throw new Error("Fixture static benchmark row is missing.");
+const cumulativeFirstLoad = {
+	nativeBytes: fixtureStatic.native + selectedExchange.nativeBytes,
+	lazyBytes: fixtureStatic.lazyStatic + selectedExchange.lazyBytes,
+	nativeTokens: fixtureStatic.nativeTokens + selectedExchange.nativeTokens,
+	lazyTokens: fixtureStatic.lazyStaticTokens + selectedExchange.lazyTokens,
+};
 
 process.stdout.write(
 	[
 		`Recorded baseline: ${RECORDED_BASELINE.gitHead} (performance ${RECORDED_BASELINE.performanceRating}/10)`,
 		"",
-		"Catalog-only bytes (Pi native -> compact; tool schema excluded):",
+		"Static routing context (Pi native catalog -> lazy catalog + skill schema):",
+		`  skill schema         ${String(toolSchemaBytes).padStart(6)} B  ${String(toolSchemaTokens).padStart(4)} tokens`,
 		...catalogRows.map(
 			(row) =>
-				`  ${row.label.padEnd(16)} ${String(row.native).padStart(6)} -> ${String(row.compact).padStart(6)} (${row.reduction}% reduction)`,
+				`  ${row.label.padEnd(18)} ${String(row.native).padStart(7)} B -> ${String(row.lazyStatic).padStart(7)} B (${row.reduction}% reduction; ${row.nativeTokens} -> ${row.lazyStaticTokens} tokens)`,
 		),
+		"",
+		"Catalog-only diagnostic (schema excluded):",
+		...catalogRows
+			.slice(0, 2)
+			.map(
+				(row) =>
+					`  ${row.label.padEnd(18)} ${String(row.native).padStart(7)} B -> ${String(row.compact).padStart(7)} B`,
+			),
+		"",
+		"Selected-skill first exchange (arguments + result; common tool schemas excluded):",
+		`  native read         ${selectedExchange.nativeBytes} B / ${selectedExchange.nativeTokens} tokens`,
+		`  lazy skill          ${selectedExchange.lazyBytes} B / ${selectedExchange.lazyTokens} tokens`,
+		`  lazy result only    ${fullToolBytes} B / ${textTokens(fullToolResult)} tokens`,
+		`  cumulative first load: native ${cumulativeFirstLoad.nativeBytes} B / ${cumulativeFirstLoad.nativeTokens} tokens -> lazy ${cumulativeFirstLoad.lazyBytes} B / ${cumulativeFirstLoad.lazyTokens} tokens`,
 		"",
 		`Warm selected-skill load (${MEASURED_ITERATIONS} iterations, milliseconds):`,
 		`  raw read + parse       p50 ${rawRead.p50}  p95 ${rawRead.p95}`,
@@ -177,7 +253,8 @@ process.stdout.write(
 		`  recorded old default   p50 ${RECORDED_BASELINE.defaultLoadP50Ms.toFixed(3)}  p95 ${RECORDED_BASELINE.defaultLoadP95Ms.toFixed(3)}`,
 		"",
 		"Timing is machine-specific; compare runs on the same workstation.",
-		"Catalog byte reductions exclude the additional skill tool schema.",
+		"Common built-in tool schemas are excluded from the selected-exchange comparison.",
+		"Catalog-only values are diagnostics; static totals include the skill schema.",
 		"",
 	].join("\n"),
 );

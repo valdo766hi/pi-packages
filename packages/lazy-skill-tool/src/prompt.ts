@@ -63,9 +63,13 @@ function blockMatchesSnapshot(
 		block.openingIndex,
 		block.closingIndex + CLOSE_TAG.length,
 	);
-	const actualNames = [...content.matchAll(/<name>([^<]*)<\/name>/gu)].map(
+	const attributeNames = [
+		...content.matchAll(/<skill\b[^>]*\bname="([^"]*)"[^>]*>/gu),
+	].map((match) => match[1] ?? "");
+	const nestedNames = [...content.matchAll(/<name>([^<]*)<\/name>/gu)].map(
 		(match) => match[1] ?? "",
 	);
+	const actualNames = [...attributeNames, ...nestedNames];
 	const expectedNames = skills.map((skill) => escapeXml(skill.name)).toSorted();
 	return (
 		actualNames.length === expectedNames.length &&

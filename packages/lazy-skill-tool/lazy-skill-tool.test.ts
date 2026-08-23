@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { afterEach, test } from "node:test";
 import {
+	estimateTokens,
 	formatSkillsForPrompt,
 	loadSkillsFromDir,
 	parseFrontmatter,
@@ -181,24 +182,33 @@ test("compact catalog is sorted, escaped, and hides disabled skills", () => {
 			makeSkill("zeta", "Zeta & details"),
 			makeSkill("alpha", "Alpha <details>"),
 			makeSkill("a&b", "Unicode 😀 & details"),
+			makeSkill("line\nbreak", "Newline name"),
+			makeSkill("tab\tname", "Tab name"),
+			makeSkill("nul\0name", "Control name"),
+			makeSkill("literal\\nname", "Literal escape name"),
 			makeSkill("hidden", "Do not show", undefined, undefined, true),
 		],
 		CONFIG,
 	);
 
 	assert.ok(
-		catalog.indexOf("<name>alpha</name>") < catalog.indexOf("<name>zeta</name>"),
+		catalog.indexOf('<skill name="alpha">') <
+			catalog.indexOf('<skill name="zeta">'),
 	);
 	assert.ok(catalog.includes("Alpha &lt;details&gt;"));
 	assert.ok(catalog.includes("Zeta &amp; details"));
-	assert.ok(catalog.includes("<name>a&amp;b</name>"));
+	assert.ok(catalog.includes('<skill name="a&amp;b">'));
+	assert.ok(catalog.includes('<skill name="line\\nbreak">'));
+	assert.ok(catalog.includes('<skill name="tab\\tname">'));
+	assert.ok(catalog.includes('<skill name="nul\\u0000name">'));
+	assert.ok(catalog.includes('<skill name="literal\\\\nname">'));
+	assert.ok(!catalog.includes("line\nbreak"));
+	assert.ok(!catalog.includes("tab\tname"));
+	assert.ok(!catalog.includes("nul\0name"));
 	assert.ok(!catalog.includes("hidden"));
 	assert.ok(!catalog.includes("/test/fixtures"));
 	assert.ok(!catalog.includes("  <skill>"));
-	assert.match(
-		catalog,
-		/<skill><name>alpha<\/name><description>[^\n]+<\/description><\/skill>/u,
-	);
+	assert.match(catalog, /<skill name="alpha">[^\n]+<\/skill>/u);
 });
 
 test("compact catalogs meet deterministic byte-reduction budgets", () => {
@@ -283,11 +293,11 @@ test("prompt transformation replaces only the bounded native skill section", () 
 	assert.equal(result.warning, undefined);
 	assert.ok(result.prompt.includes("<before><value>1</value></before>"));
 	assert.ok(result.prompt.includes("<after><value>2</value></after>"));
-	assert.ok(result.prompt.includes("<name>alpha</name>"));
+	assert.ok(result.prompt.includes('<skill name="alpha">'));
 	assert.ok(!result.prompt.includes("/private/native/SKILL.md"));
 	assert.ok(!result.prompt.includes("# Alpha"));
 	assert.ok(!result.prompt.includes("Use the read tool"));
-	assert.ok(result.prompt.includes("with the `skill` tool"));
+	assert.ok(result.prompt.includes("Call `skill` by exact name"));
 	assert.equal(
 		transformSkillPrompt(result.prompt, [alpha], CONFIG).prompt,
 		result.prompt,
@@ -305,7 +315,7 @@ test("prompt transformation selects the canonical block when unrelated XML uses 
 
 	assert.equal(result.warning, undefined);
 	assert.ok(result.prompt.includes("<name>example</name>"));
-	assert.ok(result.prompt.includes("<name>alpha</name>"));
+	assert.ok(result.prompt.includes('<skill name="alpha">'));
 	assert.ok(!result.prompt.includes("/private/native/SKILL.md"));
 });
 
@@ -359,7 +369,7 @@ test("skill-only mode appends a compact catalog without replacing unrelated XML"
 	assert.equal(result.replaced, true);
 	assert.ok(result.prompt.startsWith(prompt));
 	assert.ok(result.prompt.includes("<custom>keep</custom>"));
-	assert.ok(result.prompt.includes("<name>alpha</name>"));
+	assert.ok(result.prompt.includes('<skill name="alpha">'));
 });
 
 test("prompt transformation fails safely when tags are missing or incomplete", () => {
@@ -839,6 +849,7 @@ type BeforeEvent = Pick<
 type RegisteredTool = {
 	name: string;
 	description: string;
+	parameters: unknown;
 	execute: (
 		toolCallId: string,
 		params: { name: string; offset?: number; column?: number },
@@ -892,6 +903,76 @@ function combinedText(result: {
 	return result.content.map((item) => item.text).join("\n");
 }
 
+function serializedToolDefinition(tool: RegisteredTool): string {
+	return JSON.stringify({
+		name: tool.name,
+		description: tool.description,
+		parameters: tool.parameters,
+	});
+}
+
+function estimatedTextTokens(value: string): number {
+	return estimateTokens({
+		role: "user",
+		content: [{ type: "text", text: value }],
+	} as Parameters<typeof estimateTokens>[0]);
+}
+
+test("skill tool schema stays compact without weakening its contract", () => {
+	const harness = createHarness();
+	const serialized = serializedToolDefinition(harness.tool);
+	const schema = harness.tool.parameters as {
+		type: string;
+		required: string[];
+		properties: Record<string, Record<string, unknown>>;
+		additionalProperties: boolean;
+	};
+	assert.equal(
+		harness.tool.description,
+		"Load a listed skill; use returned next offset/column to continue.",
+	);
+	assert.ok(Buffer.byteLength(serialized) <= 312);
+	assert.ok(estimatedTextTokens(serialized) <= 78);
+	assert.deepEqual(schema.required, ["name"]);
+	assert.deepEqual(Object.keys(schema.properties).sort(), [
+		"column",
+		"name",
+		"offset",
+	]);
+	assert.equal(schema.properties.name?.type, "string");
+	assert.equal(schema.properties.name?.minLength, 1);
+	assert.equal(schema.properties.offset?.type, "integer");
+	assert.equal(schema.properties.offset?.minimum, 1);
+	assert.equal(schema.properties.column?.type, "integer");
+	assert.equal(schema.properties.column?.minimum, 1);
+	assert.equal(schema.additionalProperties, false);
+});
+
+test("lazy static routing context beats native Pi at small and large scales", () => {
+	const schemaBytes = Buffer.byteLength(
+		serializedToolDefinition(createHarness().tool),
+	);
+	for (const count of [1, 2, 5, 10, 20, 100]) {
+		const skills = Array.from({ length: count }, (_, index) =>
+			makeSkill(
+				`scale-${String(index).padStart(3, "0")}`,
+				`Use this skill for focused workflow ${index}, validation, and related project tasks.`,
+			),
+		);
+		const native = formatSkillsForPrompt(skills);
+		const lazy = renderCompactCatalog(skills, CONFIG);
+		assert.ok(
+			Buffer.byteLength(lazy) + schemaBytes < Buffer.byteLength(native),
+			`lazy static context did not beat native Pi at ${count} skills`,
+		);
+		assert.ok(
+			estimatedTextTokens(lazy) +
+				estimatedTextTokens(serializedToolDefinition(createHarness().tool)) <=
+				estimatedTextTokens(native),
+		);
+	}
+});
+
 test("Pi canonical discovery feeds the lazy prompt and tool harness", async () => {
 	const discovered = loadSkillsFromDir({ dir: FIXTURE_ROOT, source: "path" });
 	assert.deepEqual(discovered.skills.map((skill) => skill.name).sort(), [
@@ -913,8 +994,8 @@ test("Pi canonical discovery feeds the lazy prompt and tool harness", async () =
 		systemPrompt: stockPrompt,
 		systemPromptOptions: promptOptions(discovered.skills),
 	})) as { systemPrompt: string };
-	assert.ok(result.systemPrompt.includes("<name>alpha</name>"));
-	assert.ok(result.systemPrompt.includes("<name>beta</name>"));
+	assert.ok(result.systemPrompt.includes('<skill name="alpha">'));
+	assert.ok(result.systemPrompt.includes('<skill name="beta">'));
 	assert.ok(!result.systemPrompt.includes("/alpha/SKILL.md"));
 	assert.ok(!result.systemPrompt.includes("# Alpha"));
 
@@ -957,12 +1038,18 @@ test("real-world discovered skill routes and loads end to end without fidelity l
 		undefined,
 		{} as ExtensionContext,
 	);
-	const context = result.content[1]?.text ?? "";
+	const context = JSON.parse(result.content[1]?.text ?? "") as Record<
+		string,
+		unknown
+	>;
 	assert.equal(result.content[0]?.text, expectedBody);
 	assert.ok(expectedBody.includes("compatibility: Requires access"));
 	assert.ok(expectedBody.includes("allowed-tools: read bash"));
-	assert.ok(context.includes(`Skill file: ${skill.filePath}`));
-	assert.ok(context.includes(`Base directory: ${skill.baseDir}`));
+	assert.deepEqual(context, {
+		skill: skill.name,
+		base: skill.baseDir,
+		fileFromBase: "SKILL.md",
+	});
 	assert.equal(result.details.bodyTruncated, false);
 	assert.equal(result.details.bodyOffset, 1);
 });
@@ -999,10 +1086,14 @@ test("large skill instructions continue through the same tool at Pi read limits"
 		{} as ExtensionContext,
 	);
 	const firstText = first.content[0]?.text ?? "";
+	const firstContext = JSON.parse(first.content[1]?.text ?? "") as {
+		next?: { offset: number; column?: number };
+	};
 	assert.equal(first.details.bodyTruncated, true);
 	assert.equal(typeof first.details.nextOffset, "number");
+	assert.deepEqual(firstContext.next, { offset: first.details.nextOffset });
 	assert.ok(firstText.includes(lines[0] ?? "missing first line"));
-	assert.ok(combinedText(first).includes("Continue with skill"));
+	assert.ok(!combinedText(first).includes("Base directory:"));
 
 	let result = first;
 	let continuationCount = 0;
@@ -1016,10 +1107,16 @@ test("large skill instructions continue through the same tool at Pi read limits"
 			{} as ExtensionContext,
 		);
 		const text = result.content[0]?.text ?? "";
+		const context = JSON.parse(result.content[1]?.text ?? "") as {
+			next?: { offset: number; column?: number };
+		};
 		assert.ok(
 			text.includes(sourceLines[nextOffset - 1] ?? "missing continuation"),
 		);
 		assert.equal(result.details.bodyOffset, nextOffset);
+		if (result.details.bodyTruncated) {
+			assert.ok(context.next);
+		}
 		assert.equal(result.details.directoriesVisited, 0);
 		continuationCount += 1;
 		assert.ok(continuationCount < 10, "tool continuation did not finish");
@@ -1044,8 +1141,8 @@ test("extension registers one static tool and keeps prompt and registry synchron
 		systemPrompt: nativePrompt(["alpha", "beta"]),
 		systemPromptOptions: promptOptions([alpha, beta]),
 	})) as { systemPrompt: string };
-	assert.ok(first.systemPrompt.includes("<name>alpha</name>"));
-	assert.ok(first.systemPrompt.includes("<name>beta</name>"));
+	assert.ok(first.systemPrompt.includes('<skill name="alpha">'));
+	assert.ok(first.systemPrompt.includes('<skill name="beta">'));
 	assert.ok(!first.systemPrompt.includes(alpha.filePath));
 
 	const loaded = await harness.tool.execute(
@@ -1056,15 +1153,19 @@ test("extension registers one static tool and keeps prompt and registry synchron
 		{} as ExtensionContext,
 	);
 	assert.ok(loaded.content[0]?.text.includes("# Alpha"));
-	assert.ok(loaded.content[1]?.text.includes("Base directory:"));
-	assert.ok(!combinedText(loaded).includes("<skill_files"));
+	assert.deepEqual(JSON.parse(loaded.content[1]?.text ?? ""), {
+		skill: "alpha",
+		base: alpha.baseDir,
+		fileFromBase: "SKILL.md",
+	});
+	assert.equal(Buffer.byteLength(loaded.content[1]?.text ?? ""), 130);
 	assert.equal(loaded.details.directoriesVisited, 0);
 
 	const next = (await harness.before({
 		systemPrompt: nativePrompt(["beta"]),
 		systemPromptOptions: promptOptions([beta]),
 	})) as { systemPrompt: string };
-	assert.ok(!next.systemPrompt.includes("<name>alpha</name>"));
+	assert.ok(!next.systemPrompt.includes('<skill name="alpha">'));
 	await assert.rejects(
 		harness.tool.execute(
 			"call",
@@ -1114,7 +1215,7 @@ test("extension only rewrites prompts when its tool is active", async () => {
 		systemPrompt: "Base prompt",
 		systemPromptOptions: promptOptions([alpha], ["skill"]),
 	})) as { systemPrompt: string };
-	assert.ok(skillOnly.systemPrompt.includes("<name>alpha</name>"));
+	assert.ok(skillOnly.systemPrompt.includes('<skill name="alpha">'));
 	assert.ok(!skillOnly.systemPrompt.includes(alpha.filePath));
 
 	const inactive = await harness.before({
@@ -1207,14 +1308,16 @@ test("tool preserves raw skill source and escapes metadata fields", async () => 
 		undefined,
 		{} as ExtensionContext,
 	);
-	const context = result.content[1]?.text ?? "";
+	const context = JSON.parse(result.content[1]?.text ?? "") as Record<
+		string,
+		unknown
+	>;
 	assert.equal(result.content[0]?.text, source);
-	assert.ok(context.includes('<skill_context name="a&amp;b"'));
-	assert.ok(
-		context.includes(`Base directory: ${directory.replaceAll("&", "&amp;")}`),
-	);
-	assert.ok(!context.includes("notes.md"));
-	assert.ok(!context.includes("<skill_files"));
+	assert.deepEqual(context, {
+		skill: "a&b",
+		base: directory,
+		fileFromBase: "SKILL.md",
+	});
 });
 
 test("CDATA-like source stays exact and model-facing growth remains bounded", async () => {
@@ -1303,9 +1406,16 @@ test("configured related-file sampling stays bounded and explicit", async () => 
 		undefined,
 		{} as ExtensionContext,
 	);
-	const text = result.content[1]?.text ?? "";
-	assert.ok(text.includes('<skill_files truncated="false">'));
-	assert.ok(text.includes(`<file>${join(directory, "notes.md")}</file>`));
+	const context = JSON.parse(result.content[1]?.text ?? "") as Record<
+		string,
+		unknown
+	>;
+	assert.deepEqual(context, {
+		skill: "sampled",
+		base: directory,
+		fileFromBase: "SKILL.md",
+		filesFromBase: ["notes.md"],
+	});
 	assert.equal(result.details.directoriesVisited, 1);
 });
 

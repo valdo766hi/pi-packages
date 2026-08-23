@@ -31,7 +31,7 @@ Pi discovery
     ▼
 current skill snapshot
     │
-    ├── compact <available_skills> → model context
+    ├── compact <skills> → model context
     │
     └── exact-name registry
              │
@@ -122,6 +122,18 @@ The model can provide only an exact skill name:
 {"name":"pdf-processing"}
 ```
 
+The compact catalog uses one complete, unambiguous record per skill:
+
+```xml
+<skills>
+<skill name="pdf-processing">Complete description and routing triggers.</skill>
+</skills>
+```
+
+The name remains the exact registry key; the description is complete by default.
+Name attributes use JSON escapes before XML escaping, so non-standard names with
+whitespace, controls, or literal backslashes remain unambiguous.
+
 The extension never turns that name into a filesystem path. It looks up the
 name in Pi's current canonical registry and reads only the `filePath` supplied
 by Pi. Unknown input—including unknown path-like input—has no filesystem
@@ -130,13 +142,23 @@ unterminated frontmatter, invalid UTF-8, empty instructions, and aborted calls
 fail cleanly. Pi remains authoritative if it canonically discovers a
 non-standard but exact skill name.
 
-A successful result contains:
+A successful result contains two text items:
 
-- the validated raw `SKILL.md`, including standard frontmatter such as
-  `compatibility`, `allowed-tools`, and `metadata`;
-- the canonical skill file and base directory for resolving relative references;
-- when explicitly configured, a sorted and bounded sample of nearby files,
-  excluding `SKILL.md`; the default performs no directory traversal.
+1. the validated raw `SKILL.md`, including standard frontmatter such as
+   `compatibility`, `allowed-tools`, and `metadata`;
+2. compact JSON context containing the skill name, base directory, canonical
+   file path relative to that base, and only the continuation or sampled-file
+   fields that are needed.
+
+Normal context:
+
+```json
+{"skill":"pdf-processing","base":"/skills/pdf-processing","fileFromBase":"SKILL.md"}
+```
+
+The raw source is never wrapped in XML, JSON, Markdown, or CDATA, so its bytes
+remain unchanged. When explicitly configured, sampled files are relative to
+`base`; the default performs no directory traversal.
 
 Descriptions are complete by default so late trigger phrases remain available for
 routing. Skill-file output uses Pi's regular read limits: 2,000 lines or 50 KiB
@@ -179,12 +201,14 @@ npm run pack:check
 npm run benchmark:lazy-skills
 ```
 
-The benchmark compares compact catalog bytes with Pi's real
-`formatSkillsForPrompt()` output for fixture and scaled synthetic catalogs. These
-are catalog-only byte counts; they do not include the additional tool schema. It
-also reports warm p50/p95 load timings for raw reads, the default no-sampling
-path, and opt-in sampling. Timing is machine-specific and byte reduction is not
-a universal token-saving claim.
+The benchmark compares the complete static routing context—Pi's native catalog
+against the compact catalog plus the serialized `skill` tool schema—using Pi's
+real `formatSkillsForPrompt()` and `estimateTokens()` implementations. It also
+reports catalog-only diagnostics, selected-skill first-exchange cost, cumulative
+first-load cost, and warm p50/p95 load timings. Common built-in
+tool schemas are excluded from both sides. Timing is machine-specific; token
+and byte savings are measured claims for the listed fixtures and scales, not a
+universal tokenizer claim.
 
 ## License
 

@@ -3,10 +3,10 @@ import type {
 	ExtensionContext,
 	TruncationResult,
 } from "@earendil-works/pi-coding-agent";
+import { relative } from "node:path";
 import { Type, type Static } from "typebox";
 import {
 	buildRegistry,
-	escapeXml,
 	readConfig,
 	visibleSkills,
 	type RuntimeSkill,
@@ -15,26 +15,15 @@ import { loadSkill } from "./loader.ts";
 import { appendSkillCatalog, transformSkillPrompt } from "./prompt.ts";
 
 const TOOL_DESCRIPTION =
-	"Load a skill listed in <available_skills> by exact name. Returns its validated SKILL.md and base directory. Use offset and column to continue large content.";
+	"Load a listed skill; use returned next offset/column to continue.";
 
 const PARAMETERS = Type.Object(
 	{
 		name: Type.String({
-			description: "Exact available skill name",
 			minLength: 1,
 		}),
-		offset: Type.Optional(
-			Type.Integer({
-				description: "Skill file line to start from (1-indexed)",
-				minimum: 1,
-			}),
-		),
-		column: Type.Optional(
-			Type.Integer({
-				description: "Character on the offset line (1-indexed)",
-				minimum: 1,
-			}),
-		),
+		offset: Type.Optional(Type.Integer({ minimum: 1 })),
+		column: Type.Optional(Type.Integer({ minimum: 1 })),
 	},
 	{ additionalProperties: false },
 );
@@ -66,41 +55,33 @@ function toolResult({
 	truncated,
 	directoriesVisited,
 }: ToolResultInput) {
-	const continuation: string[] = [];
-	if (bodyTruncation.truncated && nextOffset !== undefined) {
-		const columnArgument =
-			nextColumn === undefined || nextColumn === 1 ? "" : `, column=${nextColumn}`;
-		continuation.push(
-			"",
-			`Skill file truncated at Pi's regular ${bodyTruncation.maxLines}-line or ${bodyTruncation.maxBytes}-byte output limit.`,
-			`Continue with skill(name="${escapeXml(skill.name)}", offset=${nextOffset}${columnArgument}).`,
-		);
+	const context: {
+		skill: string;
+		base: string;
+		fileFromBase: string;
+		next?: { offset: number; column?: number };
+		filesFromBase?: string[];
+		filesTruncated?: true;
+	} = {
+		skill: skill.name,
+		base: skill.baseDir,
+		fileFromBase: relative(skill.baseDir, skill.filePath),
+	};
+	if (nextOffset !== undefined) {
+		context.next = { offset: nextOffset };
+		if (nextColumn !== undefined && nextColumn > 1) {
+			context.next.column = nextColumn;
+		}
 	}
-	const relatedFiles: string[] = [];
 	if (files.length > 0) {
-		relatedFiles.push(
-			"",
-			`<skill_files truncated="${truncated}">`,
-			...files.map((file) => `<file>${escapeXml(file)}</file>`),
-			"</skill_files>",
-		);
-	} else if (truncated) {
-		relatedFiles.push("", "Related file sampling was incomplete.");
+		context.filesFromBase = files.map((file) => relative(skill.baseDir, file));
 	}
-	const context = [
-		`<skill_context name="${escapeXml(skill.name)}" offset="${bodyOffset}" column="${bodyColumn}" truncated="${bodyTruncation.truncated}">`,
-		...continuation,
-		`Skill file: ${escapeXml(skill.filePath)}`,
-		`Base directory: ${escapeXml(skill.baseDir)}`,
-		"Resolve relative paths from this directory.",
-		...relatedFiles,
-		"</skill_context>",
-	].join("\n");
+	if (truncated) context.filesTruncated = true;
 
 	return {
 		content: [
 			{ type: "text" as const, text: body },
-			{ type: "text" as const, text: context },
+			{ type: "text" as const, text: JSON.stringify(context) },
 		],
 		details: {
 			name: skill.name,

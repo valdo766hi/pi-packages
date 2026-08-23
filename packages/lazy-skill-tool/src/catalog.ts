@@ -123,8 +123,9 @@ function normalizeDescription(description: string): string {
 
 export function compactDescription(description: string, max: number): string {
 	const normalized = normalizeDescription(description);
+	if (max === 0) return normalized;
 	const characters = [...normalized];
-	if (max === 0 || characters.length <= max) return normalized;
+	if (characters.length <= max) return normalized;
 
 	const ellipsis = "…";
 	const budget = max - ellipsis.length;
@@ -143,6 +144,11 @@ export function escapeXml(value: string): string {
 		.replace(/'/g, "&apos;");
 }
 
+function exactNameAttribute(name: string): string {
+	const quoted = JSON.stringify(name);
+	return escapeXml(quoted.slice(1, -1));
+}
+
 export function renderCompactCatalog(
 	skills: readonly RuntimeSkill[],
 	config: Pick<LazySkillConfig, "descriptionMax">,
@@ -152,12 +158,12 @@ export function renderCompactCatalog(
 		.toSorted((a, b) => a.name.localeCompare(b.name));
 
 	return [
-		"Load matching skills with the `skill` tool by exact name. Resolve relative paths from the returned base directory.",
-		"<available_skills>",
+		"Call `skill` by exact name (JSON escapes); resolve paths from returned base.",
+		"<skills>",
 		...sorted.map(
 			(skill) =>
-				`<skill><name>${escapeXml(skill.name)}</name><description>${escapeXml(compactDescription(skill.description, config.descriptionMax))}</description></skill>`,
+				`<skill name="${exactNameAttribute(skill.name)}">${escapeXml(compactDescription(skill.description, config.descriptionMax))}</skill>`,
 		),
-		"</available_skills>",
+		"</skills>",
 	].join("\n");
 }

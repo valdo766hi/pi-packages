@@ -41,9 +41,9 @@ For a new release, update one workspace, validate it, then push its matching
 tag:
 
 ```sh
-npm version --workspace=packages/lazy-skill-tool --no-git-tag-version 0.1.3
+npm version --workspace=packages/lazy-skill-tool --no-git-tag-version 0.1.4
 npm run check
-git tag -a pi-lazy-skill-tool-0.1.3 -m "release: pi-lazy-skill-tool 0.1.3"
+git tag -a pi-lazy-skill-tool-0.1.4 -m "release: pi-lazy-skill-tool 0.1.4"
 git push origin main --follow-tags
 ```
 

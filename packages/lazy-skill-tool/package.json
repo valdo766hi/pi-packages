@@ -1,6 +1,6 @@
 {
   "name": "@valdo766hi/pi-lazy-skill-tool",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Pi extension that lazily loads discovered skills through one stable tool",
   "type": "module",
   "license": "Apache-2.0",

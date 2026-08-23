@@ -41,6 +41,7 @@ import { appendSkillCatalog, transformSkillPrompt } from "./src/prompt.ts";
 
 const FIXTURE_ROOT = resolve("test/fixtures/lazy-skills");
 const REAL_WORLD_FIXTURE_ROOT = resolve("test/fixtures/lazy-real-world");
+const RECORDED_CONTEXT_BASELINE_BYTES = 322;
 const CONFIG = {
 	descriptionMax: DEFAULT_DESCRIPTION_MAX,
 	fileLimit: DEFAULT_FILE_LIMIT,
@@ -1153,12 +1154,17 @@ test("extension registers one static tool and keeps prompt and registry synchron
 		{} as ExtensionContext,
 	);
 	assert.ok(loaded.content[0]?.text.includes("# Alpha"));
-	assert.deepEqual(JSON.parse(loaded.content[1]?.text ?? ""), {
+	const expectedContext = {
 		skill: "alpha",
 		base: alpha.baseDir,
 		fileFromBase: "SKILL.md",
-	});
-	assert.equal(Buffer.byteLength(loaded.content[1]?.text ?? ""), 130);
+	};
+	const contextText = loaded.content[1]?.text ?? "";
+	assert.deepEqual(JSON.parse(contextText), expectedContext);
+	assert.equal(contextText, JSON.stringify(expectedContext));
+	assert.ok(
+		Buffer.byteLength(contextText) <= RECORDED_CONTEXT_BASELINE_BYTES * 0.6,
+	);
 	assert.equal(loaded.details.directoriesVisited, 0);
 
 	const next = (await harness.before({

@@ -18,10 +18,13 @@ the system prompt. The model can then use `read` to open a skill file, but the
 full catalog cost is paid on every run.
 
 This extension keeps model-side skill discovery while moving the full load to
-an explicit tool call. Skill bodies are not added to context until the model
-selects that exact skill. Pi still reads skill files during canonical discovery
-to extract frontmatter; “lazy” here means model-context injection, not startup
-filesystem discovery.
+an explicit tool call. Before each user task, a local deterministic retriever
+selects a small high-recall candidate set from Pi's complete registry. Candidate
+descriptions remain complete; every other exact name remains visible in a compact
+fallback index. Uncertain queries retain the complete catalog. Skill bodies are
+not added to context until the model selects that exact skill. Pi still reads
+skill files during canonical discovery to extract frontmatter; “lazy” here means
+model-context injection, not startup filesystem discovery.
 
 ## Architecture
 
@@ -31,7 +34,9 @@ Pi discovery
     ▼
 current skill snapshot
     │
-    ├── compact <skills> → model context
+    ├── local candidate retrieval (no model/network call)
+    │       │
+    │       └── complete candidates + all remaining names → model context
     │
     └── exact-name registry
              │
@@ -47,9 +52,14 @@ current skill snapshot
 
 The tool is registered once when the extension initializes. Each
 `before_agent_start` event builds a new immutable-by-convention registry from
-`event.systemPromptOptions.skills` and replaces the active snapshot atomically.
-The dynamic registry is never captured in the tool description, so catalog
-refreshes cannot leave the model-facing catalog and tool state out of sync. If
+`event.systemPromptOptions.skills`, derives a branch-safe bounded query from the
+current prompt and recent conversation, and replaces the active snapshot
+atomically. Retrieval uses exact names, Unicode-aware terms, phrases, BM25-style
+scores, and character n-grams. It performs no filesystem discovery, subprocess,
+network request, embedding, or additional LLM call. Low-confidence or ambiguous
+queries fall back to the complete catalog. The dynamic registry is never captured
+in the tool description, so catalog refreshes cannot leave the model-facing
+catalog and tool state out of sync. If
 Pi has disabled the `skill` tool, the extension leaves the native prompt alone;
 if `skill` is active without `read`, it appends the compact catalog instead of
 trying to rewrite a missing native section.
@@ -72,12 +82,16 @@ static tool registration from dynamic catalog state, handling empty refreshes,
 using a bounded prompt transformer, loading files asynchronously, making nearby
 resource sampling opt-in, and testing lifecycle/security behavior.
 
-The lazy-loading behavior is also informed by
-[OpenCode's skill tool](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/tool/skill.ts).
-The borrowed concepts are exact-name resolution, lazy full-content loading,
-base-directory context, bounded related-file sampling, and permission-aware
-loading where the host exposes an equivalent. This package does not copy
-OpenCode's framework or discovery service.
+The lazy-loading behavior is also informed by OpenCode's
+[skill registry](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/skill/index.ts),
+[skill tool](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/tool/skill.ts),
+and [system prompt integration](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/system.ts).
+The borrowed concepts are canonical registry/tool separation, exact-name
+resolution, complete routing descriptions, lazy content loading, base-directory
+context, bounded related-file sampling, and permission-aware filtering where the
+host exposes an equivalent. Adaptive host-side candidate retrieval is specific
+to this package. It does not copy OpenCode's framework, discovery service, remote
+skill cache, or unconditional sampling.
 
 ## Install
 
@@ -103,11 +117,12 @@ All settings are read when the extension loads:
 
 | Variable | Default | Valid range / behavior |
 | --- | ---: | --- |
-| `PI_LAZY_SKILL_DESCRIPTION_MAX` | `0` | `0` preserves the complete description; `1..1024` opts into shortening at a word boundary with one ellipsis. |
+| `PI_LAZY_SKILL_DESCRIPTION_MAX` | `0` | `0` preserves complete candidate descriptions; `1..1024` opts into shortening at a word boundary with one ellipsis. |
 | `PI_LAZY_SKILL_FILE_LIMIT` | `0` | `0` skips directory traversal; `1..50` adds a bounded related-file sample. |
+| `PI_LAZY_SKILL_ROUTING` | `adaptive` | `adaptive` selects complete candidate descriptions with safe full fallback; `full` always uses the complete `0.1.5`-style catalog. |
 | `PI_LAZY_SKILL_DISABLE` | unset | `1`, `true`, or `yes` disables this extension and leaves Pi's native skill behavior unchanged. |
 
-Invalid numeric values fall back to their defaults and emit one warning. When
+Invalid numeric or routing values fall back to their defaults and emit one warning. When
 enabled, the sampler stops as soon as its result budget is filled, visits at
 most 64 directories, reads at most 1024 entries per directory, skips hidden
 entries, `.git`, and `node_modules`, and never follows child symbolic-link
@@ -122,17 +137,22 @@ The model can provide only an exact skill name:
 {"name":"pdf-processing"}
 ```
 
-The compact catalog uses one complete, unambiguous record per skill:
+The adaptive catalog uses complete records for selected candidates and preserves
+all remaining exact names:
 
 ```xml
 <skills>
 <skill name="pdf-processing">Complete description and routing triggers.</skill>
 </skills>
+<other_skill_names>["another-skill","presentation"]</other_skill_names>
 ```
 
-The name remains the exact registry key; the description is complete by default.
-Name attributes use JSON escapes before XML escaping, so non-standard names with
-whitespace, controls, or literal backslashes remain unambiguous.
+The name remains the exact registry key; every selected candidate description is
+complete by default. Name attributes use JSON escapes before XML escaping, and
+the remaining-name array uses JSON plus XML text escaping, so non-standard names
+with whitespace, controls, literal backslashes, or XML characters remain
+unambiguous. When retrieval confidence is insufficient, every complete
+description is retained instead of risking a routing miss.
 
 The extension never turns that name into a filesystem path. It looks up the
 name in Pi's current canonical registry and reads only the `filePath` supplied
@@ -146,22 +166,24 @@ A successful result contains two text items:
 
 1. the validated raw `SKILL.md`, including standard frontmatter such as
    `compatibility`, `allowed-tools`, and `metadata`;
-2. compact JSON context containing the skill name, base directory, canonical
-   file path relative to that base, and only the continuation or sampled-file
-   fields that are needed.
+2. compact JSON context containing the base directory, canonical file path
+   relative to that base, and only the continuation or sampled-file fields that
+   are needed. The exact skill name is already present in the tool call and stays
+   available in non-model result details, so it is not repeated.
 
 Normal context:
 
 ```json
-{"skill":"pdf-processing","base":"/skills/pdf-processing","fileFromBase":"SKILL.md"}
+{"base":"/skills/pdf-processing","fileFromBase":"SKILL.md"}
 ```
 
 The raw source is never wrapped in XML, JSON, Markdown, or CDATA, so its bytes
 remain unchanged. When explicitly configured, sampled files are relative to
 `base`; the default performs no directory traversal.
 
-Descriptions are complete by default so late trigger phrases remain available for
-routing. Skill-file output uses Pi's regular read limits: 2,000 lines or 50 KiB
+Candidate descriptions are complete by default so late trigger phrases and
+negative boundaries remain available for routing. Skill-file output uses Pi's
+regular read limits: 2,000 lines or 50 KiB
 per call. A large skill is not rejected. The result provides the next source line,
 and the model continues with the same tool:
 
@@ -201,14 +223,18 @@ npm run pack:check
 npm run benchmark:lazy-skills
 ```
 
-The benchmark compares the complete static routing context—Pi's native catalog
-against the compact catalog plus the serialized `skill` tool schema—using Pi's
-real `formatSkillsForPrompt()` and `estimateTokens()` implementations. It also
-reports catalog-only diagnostics, selected-skill first-exchange cost, cumulative
-first-load cost, and warm p50/p95 load timings. Common built-in
-tool schemas are excluded from both sides. Timing is machine-specific; token
-and byte savings are measured claims for the listed fixtures and scales, not a
-universal tokenizer claim.
+The benchmark directly compares frozen `0.1.1`, full-catalog `0.1.5`, adaptive
+`0.1.6`, and stock Pi using Pi's real `estimateTokens()` implementation. It
+reports static routing context, selected exchange, post-skill context,
+two-request component-sum estimates, scale, fallback behavior, and warm p50/p95
+timings. Components are estimated independently; these deterministic sums are
+not presented as complete provider request-token counts.
+When the standard local skill roots exist, it also reproduces the installed
+Ponytail workflow; that local row is optional and never required by CI. Common
+context is excluded only where the output explicitly says
+“extension-attributable.” Full-fallback cases preserve quality and are not
+claimed to beat `0.1.1`. Timing is machine-specific, and measured token savings
+for listed scenarios are not a universal routing or tokenizer guarantee.
 
 ## License
 

@@ -1,5 +1,10 @@
 import type { LazySkillConfig, RuntimeSkill } from "./catalog.ts";
-import { escapeXml, renderCompactCatalog } from "./catalog.ts";
+import {
+	escapeXml,
+	renderAdaptiveCatalog,
+	renderCompactCatalog,
+} from "./catalog.ts";
+import type { RoutingSelection } from "./routing.ts";
 
 const OPEN_TAG = "<available_skills>";
 const CLOSE_TAG = "</available_skills>";
@@ -12,9 +17,7 @@ export interface PromptTransformResult {
 }
 
 function trimTrailingWhitespaceEnd(value: string): number {
-	let end = value.length;
-	while (end > 0 && /\s/u.test(value[end - 1] ?? "")) end -= 1;
-	return end;
+	return value.trimEnd().length;
 }
 
 function isSkillInstruction(value: string): boolean {
@@ -35,23 +38,12 @@ interface SkillBlock {
 }
 
 function findSkillBlocks(prompt: string): SkillBlock[] {
-	const blocks: SkillBlock[] = [];
-	let cursor = 0;
-	while (cursor < prompt.length) {
-		const openingIndex = prompt.indexOf(OPEN_TAG, cursor);
-		if (openingIndex === -1) break;
-		const closingIndex = prompt.indexOf(
-			CLOSE_TAG,
-			openingIndex + OPEN_TAG.length,
-		);
-		if (closingIndex !== -1) {
-			blocks.push({ openingIndex, closingIndex });
-			cursor = closingIndex + CLOSE_TAG.length;
-		} else {
-			cursor = openingIndex + OPEN_TAG.length;
-		}
-	}
-	return blocks;
+	const pattern = /<available_skills>[\s\S]*?<\/available_skills>/gu;
+	return [...prompt.matchAll(pattern)].map((match) => {
+		const openingIndex = match.index;
+		const closingIndex = openingIndex + match[0].lastIndexOf(CLOSE_TAG);
+		return { openingIndex, closingIndex };
+	});
 }
 
 function blockMatchesSnapshot(
@@ -70,10 +62,14 @@ function blockMatchesSnapshot(
 		(match) => match[1] ?? "",
 	);
 	const actualNames = [...attributeNames, ...nestedNames];
-	const expectedNames = skills.map((skill) => escapeXml(skill.name)).toSorted();
+	const expectedNames = skills
+		.map((skill) => escapeXml(skill.name))
+		.toSorted((left, right) => left.localeCompare(right));
 	return (
 		actualNames.length === expectedNames.length &&
-		actualNames.toSorted().every((name, index) => name === expectedNames[index])
+		actualNames
+			.toSorted((left, right) => left.localeCompare(right))
+			.every((name, index) => name === expectedNames[index])
 	);
 }
 
@@ -128,10 +124,26 @@ function findInstructionStart(
 	return isSkillInstruction(candidate) ? candidateStart : undefined;
 }
 
+function renderCatalog(
+	snapshotSkills: readonly RuntimeSkill[],
+	config: Pick<LazySkillConfig, "descriptionMax">,
+	selection?: RoutingSelection,
+): string {
+	if (!selection || selection.fallback) {
+		return renderCompactCatalog(snapshotSkills, config);
+	}
+	return renderAdaptiveCatalog(
+		selection.describedSkills,
+		selection.remainingNames,
+		config,
+	);
+}
+
 export function transformSkillPrompt(
 	systemPrompt: string,
 	skills: readonly RuntimeSkill[],
 	config: Pick<LazySkillConfig, "descriptionMax">,
+	selection?: RoutingSelection,
 ): PromptTransformResult {
 	const selected = selectSkillBlock(systemPrompt, skills);
 	if (!selected.block) {
@@ -148,10 +160,10 @@ export function transformSkillPrompt(
 	const replacementEnd = closingIndex + CLOSE_TAG.length;
 	const prefix = systemPrompt.slice(0, replacementStart);
 	const suffix = systemPrompt.slice(replacementEnd);
-	const compactCatalog = renderCompactCatalog(skills, config);
+	const catalog = renderCatalog(skills, config, selection);
 
 	return {
-		prompt: `${prefix}${compactCatalog}${suffix}`,
+		prompt: `${prefix}${catalog}${suffix}`,
 		replaced: true,
 		warning:
 			instructionStart === undefined
@@ -164,15 +176,21 @@ export function appendSkillCatalog(
 	systemPrompt: string,
 	skills: readonly RuntimeSkill[],
 	config: Pick<LazySkillConfig, "descriptionMax">,
+	selection?: RoutingSelection,
 ): PromptTransformResult {
 	if (skills.length === 0) {
 		return { prompt: systemPrompt, replaced: false };
 	}
 
-	const transformed = transformSkillPrompt(systemPrompt, skills, config);
+	const transformed = transformSkillPrompt(
+		systemPrompt,
+		skills,
+		config,
+		selection,
+	);
 	if (transformed.replaced) return transformed;
 
-	const compactCatalog = renderCompactCatalog(skills, config);
+	const compactCatalog = renderCatalog(skills, config, selection);
 	if (systemPrompt.includes(compactCatalog)) {
 		return { prompt: systemPrompt, replaced: false };
 	}

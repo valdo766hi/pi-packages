@@ -146,8 +146,16 @@ test("catalog config preserves complete descriptions and defaults to no sampling
 	assert.deepEqual(result.config, {
 		descriptionMax: 0,
 		fileLimit: 50,
+		routing: "adaptive",
 		disabled: true,
 	});
+	assert.equal(
+		readConfig({ PI_LAZY_SKILL_ROUTING: "full" }).config.routing,
+		"full",
+	);
+	const invalidRouting = readConfig({ PI_LAZY_SKILL_ROUTING: "invalid" });
+	assert.equal(invalidRouting.config.routing, "adaptive");
+	assert.equal(invalidRouting.warnings.length, 1);
 
 	const invalid = readConfig({
 		PI_LAZY_SKILL_DESCRIPTION_MAX: "-1",
@@ -846,7 +854,8 @@ test("loader makes progress through one instruction line larger than 50 KiB", as
 type BeforeEvent = Pick<
 	BeforeAgentStartEvent,
 	"systemPrompt" | "systemPromptOptions"
->;
+> &
+	Partial<Pick<BeforeAgentStartEvent, "prompt">>;
 type RegisteredTool = {
 	name: string;
 	description: string;
@@ -866,13 +875,16 @@ type RegisteredTool = {
 type Harness = {
 	tool: RegisteredTool;
 	registerCount: number;
-	before: (event: BeforeEvent) => Promise<unknown>;
+	before: (event: BeforeEvent, entries?: unknown[]) => Promise<unknown>;
 };
 
 function createHarness(): Harness {
 	const handlers = new Map<
 		string,
-		(event: BeforeEvent) => Promise<unknown> | unknown
+		(
+			event: BeforeAgentStartEvent,
+			ctx: ExtensionContext,
+		) => Promise<unknown> | unknown
 	>();
 	let tool: RegisteredTool | undefined;
 	let registerCount = 0;
@@ -884,7 +896,10 @@ function createHarness(): Harness {
 		on(event: string, handler: unknown) {
 			handlers.set(
 				event,
-				handler as (event: BeforeEvent) => Promise<unknown> | unknown,
+				handler as (
+					event: BeforeAgentStartEvent,
+					ctx: ExtensionContext,
+				) => Promise<unknown> | unknown,
 			);
 		},
 	};
@@ -894,7 +909,19 @@ function createHarness(): Harness {
 	return {
 		tool,
 		registerCount,
-		before: async (event) => handlers.get("before_agent_start")!(event),
+		before: async (event, entries = []) =>
+			handlers.get("before_agent_start")!(
+				{
+					type: "before_agent_start",
+					prompt: event.prompt ?? "",
+					...event,
+				},
+				{
+					sessionManager: {
+						buildContextEntries: () => entries,
+					},
+				} as unknown as ExtensionContext,
+			),
 	};
 }
 
@@ -930,10 +957,10 @@ test("skill tool schema stays compact without weakening its contract", () => {
 	};
 	assert.equal(
 		harness.tool.description,
-		"Load a listed skill; use returned next offset/column to continue.",
+		"Load skill; next offset/column continues.",
 	);
-	assert.ok(Buffer.byteLength(serialized) <= 312);
-	assert.ok(estimatedTextTokens(serialized) <= 78);
+	assert.ok(Buffer.byteLength(serialized) <= 288);
+	assert.ok(estimatedTextTokens(serialized) <= 72);
 	assert.deepEqual(schema.required, ["name"]);
 	assert.deepEqual(Object.keys(schema.properties).sort(), [
 		"column",
@@ -972,6 +999,23 @@ test("lazy static routing context beats native Pi at small and large scales", ()
 				estimatedTextTokens(native),
 		);
 	}
+});
+
+test("adaptive lifecycle describes exact matches and keeps remaining names", async () => {
+	const alpha = makeSkill("alpha", "Complete alpha routing instructions.");
+	const beta = makeSkill("beta", "Complete beta routing instructions.");
+	const harness = createHarness();
+	const result = (await harness.before({
+		prompt: "Use the alpha skill for this task.",
+		systemPrompt: nativePrompt(["alpha", "beta"]),
+		systemPromptOptions: promptOptions([alpha, beta]),
+	})) as { systemPrompt: string };
+
+	assert.ok(result.systemPrompt.includes("Complete alpha routing instructions."));
+	assert.ok(!result.systemPrompt.includes("Complete beta routing instructions."));
+	assert.ok(result.systemPrompt.includes("<other_skill_names>"));
+	assert.ok(result.systemPrompt.includes('["beta"]'));
+	assert.ok(!result.systemPrompt.includes("/private/alpha/SKILL.md"));
 });
 
 test("Pi canonical discovery feeds the lazy prompt and tool harness", async () => {
@@ -1047,7 +1091,6 @@ test("real-world discovered skill routes and loads end to end without fidelity l
 	assert.ok(expectedBody.includes("compatibility: Requires access"));
 	assert.ok(expectedBody.includes("allowed-tools: read bash"));
 	assert.deepEqual(context, {
-		skill: skill.name,
 		base: skill.baseDir,
 		fileFromBase: "SKILL.md",
 	});
@@ -1155,7 +1198,6 @@ test("extension registers one static tool and keeps prompt and registry synchron
 	);
 	assert.ok(loaded.content[0]?.text.includes("# Alpha"));
 	const expectedContext = {
-		skill: "alpha",
 		base: alpha.baseDir,
 		fileFromBase: "SKILL.md",
 	};
@@ -1320,7 +1362,6 @@ test("tool preserves raw skill source and escapes metadata fields", async () => 
 	>;
 	assert.equal(result.content[0]?.text, source);
 	assert.deepEqual(context, {
-		skill: "a&b",
 		base: directory,
 		fileFromBase: "SKILL.md",
 	});
@@ -1417,7 +1458,6 @@ test("configured related-file sampling stays bounded and explicit", async () => 
 		unknown
 	>;
 	assert.deepEqual(context, {
-		skill: "sampled",
 		base: directory,
 		fileFromBase: "SKILL.md",
 		filesFromBase: ["notes.md"],

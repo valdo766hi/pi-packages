@@ -12,7 +12,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "test": "node --test packages/fast/fast.test.ts packages/yolo/yolo.test.ts packages/lazy-skill-tool/lazy-skill-tool.test.ts test/imports.test.ts test/release.test.ts",
+    "test": "node --test packages/fast/fast.test.ts packages/yolo/yolo.test.ts packages/lazy-skill-tool/lazy-skill-tool.test.ts packages/lazy-skill-tool/routing.test.ts test/imports.test.ts test/release.test.ts",
     "typecheck": "tsc --noEmit",
     "pack:check": "npm pack --dry-run --workspaces",
     "benchmark:lazy-skills": "node scripts/lazy-skill-benchmark.mjs",

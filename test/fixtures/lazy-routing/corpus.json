@@ -1,0 +1,116 @@
+{
+  "skills": [
+    {
+      "name": "add-datasource",
+      "description": "Use for the implementation workflow that adds gcx CLI support for a datasource type not registered in internal/datasources/providers — query client, command constructors, DatasourceProvider registration. Trigger on \"add support for an unsupported datasource type\" or \"new datasource type\". NOT for creating or configuring a datasource instance in a Grafana stack, extending an already-registered kind, deciding the integration tier, or running pre-review self-checks."
+    },
+    {
+      "name": "add-provider",
+      "description": "Use for the implementation workflow once a capability is already classified as a Grafana Cloud product provider such as SLO, OnCall, Synthetic Monitoring, k6, or ML — provider package, commands, config keys, and optional resource adapters. Trigger on \"add provider\", \"new provider\", or \"build the product provider\". NOT for deciding whether something should be a provider."
+    },
+    {
+      "name": "council-mode",
+      "description": "Run a bounded supervisor-mediated advisor council. Use when the user asks for council mode, asks to convene advisors, debate a decision, cross-examine recommendations, or run /council."
+    },
+    {
+      "name": "create-dashboard",
+      "description": "Designs and creates Grafana dashboards with gcx, using dashboard snapshots as a visual feedback loop. Use to create dashboards, add panels, variables, or annotations, design queries or layout, or make a material visual redesign. Trigger on create dashboard, new dashboard, build dashboard, add panels, add variable, or add annotation."
+    },
+    {
+      "name": "debug-with-grafana",
+      "description": "Structured workflow for investigating application problems with Grafana observability data: metrics, logs, and traces. Covers live firefighting and retrospective incident analysis, triage, root cause, blast radius, rollout verification, errors, latency, retries, and queue backlogs."
+    },
+    {
+      "name": "find-skills",
+      "description": "Helps users discover and install agent skills when they ask how to do something, find a skill, ask whether a skill can perform a task, or want to extend agent capabilities."
+    },
+    {
+      "name": "frontend-design",
+      "description": "Guidance for distinctive, intentional visual design when building new UI or reshaping an existing one. Helps with aesthetic direction, typography, and choices that do not read as templated defaults."
+    },
+    {
+      "name": "gcx",
+      "description": "Manages Grafana Cloud resources via the gcx CLI. Trigger when the user wants to inspect, create, update, delete, query, or automate dashboards, datasources, alerts, SLOs, synthetic checks, oncall, incidents, fleet, k6, knowledge graph, or adaptive telemetry."
+    },
+    {
+      "name": "mcp-scripting",
+      "description": "Write mcpScript JavaScript for discovering, inspecting, and calling MCP tools."
+    },
+    {
+      "name": "pi-lens-ast-grep",
+      "description": "Use when searching or replacing code patterns. Use ast-grep instead of text search for semantic and structural accuracy."
+    },
+    {
+      "name": "pi-lens-lsp-navigation",
+      "description": "Navigate code with IDE features and run proactive LSP diagnostics on files, folders, and batches. Use as primary code intelligence for definitions, references, types, and errors."
+    },
+    {
+      "name": "pi-lens-write-ast-grep-rule",
+      "description": "Use when writing a new pi-lens ast-grep rule YAML file. Covers schema, drop path, gotchas, and NAPI runner constraints."
+    },
+    {
+      "name": "pi-lens-write-tree-sitter-rule",
+      "description": "Use when writing a new pi-lens tree-sitter query rule YAML file. Covers schema, S-expression syntax, capture names, predicates, and gotchas."
+    },
+    {
+      "name": "pi-subagents",
+      "description": "Delegate work to builtin or custom subagents with single-agent, parallel, scripted chaining, async, forked-context, and coordinated workflows. Use for advisory review, implementation handoffs, and multi-step tasks where one agent stays in control while others contribute."
+    },
+    {
+      "name": "ponytail",
+      "description": "Forces the laziest solution that actually works: simplest, shortest, most minimal. Question whether the task needs to exist, use standard library before custom code, native features before dependencies, and one line before fifty. Use on ANY coding task: writing, adding, refactoring, fixing, reviewing, designing, or choosing libraries. Also trigger on ponytail, be lazy, simplest solution, minimal solution, YAGNI, do less, shortest path, over-engineering, bloat, boilerplate, or unnecessary dependencies. Do NOT use for non-coding requests such as general knowledge, prose, translation, summaries, or recipes."
+    },
+    {
+      "name": "ponytail-audit",
+      "description": "Whole-repo audit for over-engineering. Scans the entire codebase instead of a diff and reports what to delete, simplify, or replace with standard library or native equivalents. Trigger on audit this codebase, audit for over-engineering, what can I delete from this repo, find bloat, or ponytail-audit."
+    },
+    {
+      "name": "ponytail-debt",
+      "description": "Harvest every ponytail comment in the codebase into a debt ledger so deliberate shortcuts and deferrals are tracked. Trigger on ponytail debt, what did ponytail defer, list the shortcuts, ponytail ledger, or what was marked for later."
+    },
+    {
+      "name": "ponytail-gain",
+      "description": "Show ponytail's measured impact as a compact scoreboard: less code, less cost, and more speed from benchmark medians. Trigger on ponytail gain, what does ponytail save, show ponytail impact, or ponytail scoreboard."
+    },
+    {
+      "name": "ponytail-help",
+      "description": "Quick-reference card for all ponytail modes, skills, and commands. Trigger on ponytail help, what ponytail commands, or how do I use ponytail."
+    },
+    {
+      "name": "ponytail-review",
+      "description": "Code review focused exclusively on over-engineering. Finds reinvented standard library, unneeded dependencies, speculative abstractions, and dead flexibility. Trigger on review for over-engineering, what can we delete, is this over-engineered, simplify review, or ponytail-review."
+    },
+    {
+      "name": "pptx",
+      "description": "Use any time a .pptx or .potx file is involved: creating slide decks, pitch decks, or presentations; reading or extracting text; editing existing presentations; combining slides; or working with templates, layouts, speaker notes, and comments. Trigger on deck, slides, presentation, PowerPoint, .pptx, or .potx."
+    },
+    {
+      "name": "show-me",
+      "description": "Help the user understand the current topic visually with concise diagrams, code-shape sketches, and focused HTML artifacts."
+    }
+  ],
+  "cases": [
+    { "prompt": "add support for a Prometheus datasource", "expected": ["add-datasource"] },
+    { "prompt": "implement a new SLO product provider", "expected": ["add-provider"] },
+    { "prompt": "convene advisors to debate this decision", "expected": ["council-mode"] },
+    { "prompt": "create a Grafana dashboard with panels and variables", "expected": ["create-dashboard"] },
+    { "prompt": "investigate production latency using logs traces and metrics", "expected": ["debug-with-grafana"] },
+    { "prompt": "find a skill that can process spreadsheets", "expected": ["find-skills"] },
+    { "prompt": "design a polished distinctive frontend interface", "expected": ["frontend-design"] },
+    { "prompt": "query and manage Grafana Cloud resources", "expected": ["gcx"] },
+    { "prompt": "write an mcpScript to call several MCP tools", "expected": ["mcp-scripting"] },
+    { "prompt": "search code for a structural AST pattern", "expected": ["pi-lens-ast-grep"] },
+    { "prompt": "find references and go to definition with LSP", "expected": ["pi-lens-lsp-navigation"] },
+    { "prompt": "write a new ast-grep rule YAML", "expected": ["pi-lens-write-ast-grep-rule"] },
+    { "prompt": "write a tree-sitter query rule YAML", "expected": ["pi-lens-write-tree-sitter-rule"] },
+    { "prompt": "delegate this work to parallel subagents", "expected": ["pi-subagents"] },
+    { "prompt": "be lazy and choose the simplest solution", "expected": ["ponytail"] },
+    { "prompt": "audit the whole repository for over-engineering", "expected": ["ponytail-audit"] },
+    { "prompt": "harvest all ponytail comments into a debt ledger", "expected": ["ponytail-debt"] },
+    { "prompt": "show the ponytail benchmark gain scoreboard", "expected": ["ponytail-gain"] },
+    { "prompt": "show ponytail commands and help", "expected": ["ponytail-help"] },
+    { "prompt": "review this diff only for over-engineering", "expected": ["ponytail-review"] },
+    { "prompt": "create a PowerPoint pitch deck", "expected": ["pptx"] },
+    { "prompt": "explain this visually with a diagram", "expected": ["show-me"] }
+  ]
+}

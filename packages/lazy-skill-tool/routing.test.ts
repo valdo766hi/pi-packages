@@ -83,10 +83,7 @@ test("frozen representative corpus has complete recall without fallback", () => 
 	const index = buildRoutingIndex(corpusSkills);
 	let fallbackCount = 0;
 	for (const item of CORPUS.cases) {
-		const selection = selectRoutingSkills(
-			index,
-			buildRoutingQuery(item.prompt),
-		);
+		const selection = selectRoutingSkills(index, buildRoutingQuery(item.prompt));
 		if (selection.fallback) fallbackCount += 1;
 		const selected = names(selection);
 		for (const expected of item.expected) {
@@ -97,6 +94,20 @@ test("frozen representative corpus has complete recall without fallback", () => 
 		}
 	}
 	assert.ok(fallbackCount / CORPUS.cases.length <= 0.1);
+});
+
+test("routing index internals are immutable snapshot data", () => {
+	const index = buildRoutingIndex(representativeSkills);
+	const document = index.documents[0];
+	assert.ok(document);
+	assert.ok(Object.isFrozen(index));
+	assert.ok(Object.isFrozen(index.documents));
+	assert.ok(Object.isFrozen(document));
+	assert.ok(Object.isFrozen(document.nameTerms));
+	assert.equal("set" in index.documentFrequency, false);
+	assert.equal("set" in document.termCounts, false);
+	assert.equal("add" in document.bigrams, false);
+	assert.equal("add" in document.characterNgrams, false);
 });
 
 test("adaptive routing prioritizes exact names and preserves multiple mandatory names", () => {
@@ -164,7 +175,9 @@ test("an exact name anywhere in an oversized prompt remains mandatory", () => {
 test("adaptive routing keeps the complete best overlapping candidate", () => {
 	const selection = selectRoutingSkills(
 		buildRoutingIndex(representativeSkills),
-		buildRoutingQuery("Review this code for over-engineering and needless abstractions."),
+		buildRoutingQuery(
+			"Review this code for over-engineering and needless abstractions.",
+		),
 	);
 
 	assert.equal(selection.fallback, false);
@@ -180,7 +193,10 @@ test("adaptive routing uses phrases, telemetry terms, and Unicode n-grams", () =
 	const index = buildRoutingIndex(representativeSkills);
 	const cases = [
 		["make a PowerPoint slide deck", "pptx"],
-		["investigate production latency using logs and traces", "debug-with-grafana"],
+		[
+			"investigate production latency using logs and traces",
+			"debug-with-grafana",
+		],
 		["日本語のプレゼンテーション資料を作成", "pptx"],
 	] as const;
 
@@ -231,12 +247,77 @@ test("recent user, assistant, and summary context resolves short follow-ups", ()
 	assert.ok(!names(selection).includes("debug-with-grafana"));
 });
 
+test("standalone current input excludes stale history and phrases never cross messages", () => {
+	const entries = [
+		{
+			type: "message",
+			message: {
+				role: "user",
+				content: "Create a PowerPoint presentation slide deck.",
+			},
+		},
+		{
+			type: "message",
+			message: {
+				role: "assistant",
+				content: [{ type: "text", text: "production" }],
+			},
+		},
+	] as const;
+	const selection = selectRoutingSkills(
+		buildRoutingIndex(representativeSkills),
+		buildRoutingQuery(
+			"Investigate latency using logs and traces.",
+			entries as unknown as Parameters<typeof buildRoutingQuery>[1],
+		),
+	);
+	assert.equal(selection.fallback, false);
+	assert.ok(names(selection).includes("debug-with-grafana"));
+	assert.ok(!names(selection).includes("pptx"));
+
+	const specificFollowUp = selectRoutingSkills(
+		buildRoutingIndex(representativeSkills),
+		buildRoutingQuery(
+			"Now use this to investigate latency using logs and traces.",
+			[
+				{
+					type: "message",
+					message: {
+						role: "user",
+						content: "Create a PowerPoint presentation slide deck. ".repeat(100),
+					},
+				},
+			] as unknown as Parameters<typeof buildRoutingQuery>[1],
+		),
+	);
+	assert.deepEqual(names(specificFollowUp), ["debug-with-grafana"]);
+
+	const referential = buildRoutingQuery("continue", [
+		{
+			type: "message",
+			message: { role: "user", content: "production" },
+		},
+		{
+			type: "message",
+			message: { role: "user", content: "latency" },
+		},
+	] as unknown as Parameters<typeof buildRoutingQuery>[1]);
+	const evidence = selectRoutingSkills(
+		buildRoutingIndex([
+			skill("phrase-only", "Handle production latency incidents."),
+		]),
+		referential,
+	).evidence[0];
+	assert.equal(evidence?.phraseScore, 0);
+});
+
 test("uncertain and empty queries preserve the complete catalog", () => {
 	const index = buildRoutingIndex(representativeSkills);
 	for (const prompt of ["", "What is the capital of France?"]) {
 		const selection = selectRoutingSkills(index, buildRoutingQuery(prompt));
 		assert.equal(selection.fallback, true);
-		assert.deepEqual(names(selection),
+		assert.deepEqual(
+			names(selection),
 			representativeSkills.map((item) => item.name).toSorted(),
 		);
 		assert.deepEqual(selection.remainingNames, []);
@@ -259,7 +340,7 @@ test("exact-name priority resists keyword-stuffed descriptions", () => {
 
 test("adaptive catalog round-trips every remaining exact name", () => {
 	const described = [skill("alpha", "Complete alpha routing description.")];
-	const remaining = ["line\nbreak", "tab\tname", "nul\0name", "a&<\"b"];
+	const remaining = ["line\nbreak", "tab\tname", "nul\0name", 'a&<"b'];
 	const catalog = renderAdaptiveCatalog(described, remaining, CONFIG);
 	const encoded = catalog.match(
 		/<other_skill_names>(.*)<\/other_skill_names>/u,

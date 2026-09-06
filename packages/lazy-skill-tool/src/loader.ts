@@ -5,13 +5,23 @@ import {
 	truncateHead,
 	type TruncationResult,
 } from "@earendil-works/pi-coding-agent";
-import { readFile } from "node:fs/promises";
+import { open } from "node:fs/promises";
 import { basename, dirname } from "node:path";
 import type { RuntimeSkill } from "./catalog.ts";
+import { DEFAULT_MAX_SOURCE_BYTES } from "./config.ts";
+import { LazySkillError } from "./errors.ts";
 import { sampleRelatedFiles, type RelatedFilesResult } from "./files.ts";
 
+/** Maximum bytes returned in one model-facing chunk. */
 export const MAX_SKILL_BYTES = DEFAULT_MAX_BYTES;
 export const MAX_SKILL_LINES = DEFAULT_MAX_LINES;
+const INITIAL_SOURCE_READ_BYTES = 64 * 1024;
+const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
+
+export interface ValidatedSkillBody {
+	readonly body: string;
+	readonly disableModelInvocation: boolean;
+}
 
 export interface LoadedSkill {
 	readonly body: string;
@@ -21,13 +31,6 @@ export interface LoadedSkill {
 	readonly nextOffset?: number;
 	readonly nextColumn?: number;
 	readonly relatedFiles: RelatedFilesResult;
-}
-
-class SkillInvalidEncodingError extends Error {
-	constructor(name: string) {
-		super(`Skill "${name}" is not valid UTF-8.`);
-		this.name = "SkillInvalidEncodingError";
-	}
 }
 
 function isAbortError(error: unknown): boolean {
@@ -40,59 +43,180 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
 	throw new DOMException("The operation was aborted", "AbortError");
 }
 
-async function readSkillFile(
-	filePath: string,
-	name: string,
+function invalidFrontmatter(
+	skill: RuntimeSkill,
+	cause?: unknown,
+): LazySkillError {
+	return new LazySkillError("SKILL_INVALID_FRONTMATTER", {
+		requestedName: skill.name,
+		canonicalPath: skill.filePath,
+		cause,
+	});
+}
+
+function hasFrontmatterEnvelope(content: string): boolean {
+	const normalized = content.includes("\r")
+		? content.replace(/\r\n?/gu, "\n")
+		: content;
+	if (!normalized.startsWith("---\n")) return false;
+	const closingIndex = normalized.indexOf("\n---", 4);
+	if (closingIndex === -1) return false;
+	const afterClosing = closingIndex + 4;
+	return afterClosing === normalized.length || normalized[afterClosing] === "\n";
+}
+
+async function readBoundedSkillSource(
+	skill: RuntimeSkill,
+	maxSourceBytes: number,
 	signal: AbortSignal | undefined,
-): Promise<string> {
-	const buffer = await readFile(filePath, { signal });
+): Promise<Buffer> {
 	throwIfAborted(signal);
+	let handle: Awaited<ReturnType<typeof open>> | undefined;
 	try {
-		return new TextDecoder("utf-8", { fatal: true }).decode(buffer);
-	} catch {
-		throw new SkillInvalidEncodingError(name);
+		handle = await open(skill.filePath, "r");
+		const initialCapacity = Math.min(
+			INITIAL_SOURCE_READ_BYTES,
+			maxSourceBytes + 1,
+		);
+		const initialBuffer = Buffer.allocUnsafe(Math.max(0, initialCapacity));
+		const [metadata, initialRead] = await Promise.all([
+			handle.stat(),
+			handle.read(initialBuffer, 0, initialBuffer.byteLength, 0),
+		]);
+		throwIfAborted(signal);
+		if (!metadata.isFile()) {
+			throw new LazySkillError("SKILL_UNREADABLE", {
+				requestedName: skill.name,
+				canonicalPath: skill.filePath,
+			});
+		}
+		if (
+			metadata.size > maxSourceBytes ||
+			initialRead.bytesRead > maxSourceBytes
+		) {
+			throw new LazySkillError("SKILL_SOURCE_TOO_LARGE", {
+				requestedName: skill.name,
+				canonicalPath: skill.filePath,
+			});
+		}
+
+		const expectedBytes = Math.max(metadata.size, initialRead.bytesRead);
+		if (expectedBytes === initialRead.bytesRead) {
+			return initialBuffer.subarray(0, initialRead.bytesRead);
+		}
+		const buffer = Buffer.allocUnsafe(expectedBytes);
+		initialBuffer.copy(buffer, 0, 0, initialRead.bytesRead);
+		let bytesRead = initialRead.bytesRead;
+		while (bytesRead < buffer.byteLength) {
+			throwIfAborted(signal);
+			const result = await handle.read(
+				buffer,
+				bytesRead,
+				buffer.byteLength - bytesRead,
+				bytesRead,
+			);
+			if (result.bytesRead === 0) break;
+			bytesRead += result.bytesRead;
+		}
+		throwIfAborted(signal);
+		const source = buffer.subarray(0, bytesRead);
+		if (source.byteLength > maxSourceBytes) {
+			throw new LazySkillError("SKILL_SOURCE_TOO_LARGE", {
+				requestedName: skill.name,
+				canonicalPath: skill.filePath,
+			});
+		}
+		return source;
+	} catch (error) {
+		throwIfAborted(signal);
+		if (isAbortError(error) || error instanceof LazySkillError) throw error;
+		throw new LazySkillError("SKILL_UNREADABLE", {
+			requestedName: skill.name,
+			canonicalPath: skill.filePath,
+			cause: error,
+		});
+	} finally {
+		try {
+			await handle?.close();
+		} catch {
+			// The validated read result or primary error remains authoritative.
+		}
 	}
 }
 
-function validateSkillFile(rawContent: string, skill: RuntimeSkill): void {
-	const normalized = rawContent.replace(/\r\n?/gu, "\n");
-	const closingIndex = normalized.indexOf("\n---", 4);
-	const afterClosing = closingIndex + 4;
-	if (
-		!normalized.startsWith("---\n") ||
-		closingIndex === -1 ||
-		(afterClosing < normalized.length && normalized[afterClosing] !== "\n")
-	) {
-		throw new Error(`Skill "${skill.name}" has invalid frontmatter.`);
+/**
+ * Read and revalidate the canonical skill source without caching its body.
+ * The returned body uses Pi's frontmatter stripping semantics.
+ */
+export async function readValidatedSkillBody(
+	skill: RuntimeSkill,
+	maxSourceBytes = DEFAULT_MAX_SOURCE_BYTES,
+	signal?: AbortSignal,
+	allowModelDisabled = false,
+): Promise<ValidatedSkillBody> {
+	const buffer = await readBoundedSkillSource(skill, maxSourceBytes, signal);
+	let source: string;
+	try {
+		source = UTF8_DECODER.decode(buffer);
+	} catch (cause) {
+		throw new LazySkillError("SKILL_INVALID_UTF8", {
+			requestedName: skill.name,
+			canonicalPath: skill.filePath,
+			cause,
+		});
 	}
+	throwIfAborted(signal);
+	if (!hasFrontmatterEnvelope(source)) throw invalidFrontmatter(skill);
 
 	let parsed: ReturnType<typeof parseFrontmatter<Record<string, unknown>>>;
 	try {
-		parsed = parseFrontmatter<Record<string, unknown>>(rawContent);
-	} catch {
-		throw new Error(`Skill "${skill.name}" has invalid frontmatter.`);
+		parsed = parseFrontmatter<Record<string, unknown>>(source);
+	} catch (cause) {
+		throw invalidFrontmatter(skill, cause);
 	}
-
 	const description = parsed.frontmatter.description;
-	const currentName = parsed.frontmatter.name;
-	const canonicalName =
-		currentName === undefined || currentName === null || currentName === ""
-			? basename(dirname(skill.filePath))
-			: currentName;
+	if (typeof description !== "string" || description.trim().length === 0) {
+		throw invalidFrontmatter(skill);
+	}
+	const declaredName = parsed.frontmatter.name;
 	if (
-		typeof description !== "string" ||
-		description.trim().length === 0 ||
-		typeof canonicalName !== "string" ||
-		canonicalName !== skill.name
+		declaredName !== undefined &&
+		declaredName !== null &&
+		typeof declaredName !== "string"
 	) {
-		throw new Error(`Skill "${skill.name}" has invalid frontmatter.`);
+		throw invalidFrontmatter(skill);
 	}
-	if (parsed.frontmatter["disable-model-invocation"] === true) {
-		throw new Error(`Skill "${skill.name}" is no longer available.`);
+	const currentName =
+		declaredName === undefined || declaredName === null || declaredName === ""
+			? basename(dirname(skill.filePath))
+			: declaredName;
+	if (currentName !== skill.name) {
+		throw new LazySkillError("SKILL_NAME_CHANGED", {
+			requestedName: skill.name,
+			canonicalPath: skill.filePath,
+		});
 	}
-	if (parsed.body.trim().length === 0) {
-		throw new Error(`Skill "${skill.name}" has no instructions.`);
+	const disabled = parsed.frontmatter["disable-model-invocation"];
+	if (disabled !== undefined && typeof disabled !== "boolean") {
+		throw invalidFrontmatter(skill);
 	}
+	if (disabled === true && !allowModelDisabled) {
+		throw new LazySkillError("SKILL_DISABLED_FOR_MODEL", {
+			requestedName: skill.name,
+			canonicalPath: skill.filePath,
+		});
+	}
+	if (parsed.body.length === 0) {
+		throw new LazySkillError("SKILL_EMPTY", {
+			requestedName: skill.name,
+			canonicalPath: skill.filePath,
+		});
+	}
+	throwIfAborted(signal);
+	return {
+		body: parsed.body,
+		disableModelInvocation: disabled === true,
+	};
 }
 
 function sliceFromCharacter(value: string, column: number): string | undefined {
@@ -124,28 +248,20 @@ export async function loadSkill(
 	signal?: AbortSignal,
 	offset = 1,
 	column = 1,
+	maxSourceBytes = DEFAULT_MAX_SOURCE_BYTES,
 ): Promise<LoadedSkill> {
-	throwIfAborted(signal);
-
-	let rawContent: string;
-	try {
-		rawContent = await readSkillFile(skill.filePath, skill.name, signal);
-	} catch (error) {
-		throwIfAborted(signal);
-		if (isAbortError(error) || error instanceof SkillInvalidEncodingError) {
-			throw error;
-		}
-		throw new Error(`Skill "${skill.name}" is no longer readable.`);
-	}
-
-	throwIfAborted(signal);
-	validateSkillFile(rawContent, skill);
-
-	const lines = rawContent.split("\n");
+	const validated = await readValidatedSkillBody(
+		skill,
+		maxSourceBytes,
+		signal,
+		false,
+	);
+	const lines = validated.body.split("\n");
 	if (!Number.isInteger(offset) || offset < 1 || offset > lines.length) {
-		throw new Error(
-			`Skill "${skill.name}" offset ${offset} is beyond its ${lines.length} file lines.`,
-		);
+		throw new LazySkillError("SKILL_OFFSET_INVALID", {
+			requestedName: skill.name,
+			canonicalPath: skill.filePath,
+		});
 	}
 	const line = lines[offset - 1] ?? "";
 	const firstLine =
@@ -153,10 +269,12 @@ export async function loadSkill(
 			? sliceFromCharacter(line, column)
 			: undefined;
 	if (firstLine === undefined) {
-		throw new Error(
-			`Skill "${skill.name}" column ${column} is beyond line ${offset}.`,
-		);
+		throw new LazySkillError("SKILL_OFFSET_INVALID", {
+			requestedName: skill.name,
+			canonicalPath: skill.filePath,
+		});
 	}
+
 	const remainingContent = [firstLine, ...lines.slice(offset)].join("\n");
 	let bodyTruncation = truncateHead(remainingContent);
 	let body = bodyTruncation.content;
@@ -179,12 +297,14 @@ export async function loadSkill(
 		nextColumn = 1;
 	}
 
+	throwIfAborted(signal);
 	const relatedFiles = await sampleRelatedFiles(
 		skill.baseDir,
 		skill.filePath,
 		offset === 1 && column === 1 ? fileLimit : 0,
 		signal,
 	);
+	throwIfAborted(signal);
 	return {
 		body,
 		bodyOffset: offset,

@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/valdo766hi/pi-packages/pi-lazy-skill-tool-0.2.0/packages/lazy-skill-tool/schema/lazy-skill.schema.json",
+  "title": "Pi lazy skill tool configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "format": "uri-reference"
+    },
+    "routing": {
+      "type": "string",
+      "enum": ["safe", "full", "adaptive"],
+      "default": "safe"
+    },
+    "permission": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "skill": {
+          "oneOf": [
+            { "$ref": "#/$defs/action" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "default": { "$ref": "#/$defs/action" },
+                "rules": {
+                  "type": "array",
+                  "items": { "$ref": "#/$defs/rule" }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "maxDescriptionCharacters": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1024,
+      "default": 0,
+      "description": "Zero preserves complete descriptions."
+    },
+    "maxSourceBytes": {
+      "type": "integer",
+      "minimum": 1024,
+      "maximum": 67108864,
+      "default": 16777216
+    },
+    "resourceFileSampleLimit": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 50,
+      "default": 0
+    }
+  },
+  "$defs": {
+    "action": {
+      "type": "string",
+      "enum": ["allow", "ask", "deny"]
+    },
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pattern", "action"],
+      "properties": {
+        "pattern": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Exact skill-name pattern using only * and ? as wildcards."
+        },
+        "action": { "$ref": "#/$defs/action" }
+      }
+    }
+  }
+}

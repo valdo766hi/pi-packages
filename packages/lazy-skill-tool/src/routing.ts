@@ -4,6 +4,7 @@ import {
 	type SessionMessageEntry,
 } from "@earendil-works/pi-coding-agent";
 import type { RuntimeSkill } from "./catalog.ts";
+import { immutableMap, immutableSet } from "./immutable.ts";
 
 const MAX_DESCRIBED_SKILLS = 5;
 const MAX_CANDIDATE_TOKENS = 1_100;
@@ -14,6 +15,21 @@ const MAX_SUMMARIES = 2;
 const MIN_CONFIDENT_SCORE = 4;
 const MIN_SIGNAL_SCORE = 0.8;
 const NEAR_TIE_RATIO = 0.9;
+const MAX_REFERENTIAL_CONTENT_TERMS = 3;
+const REFERENTIAL_TERMS = new Set([
+	"again",
+	"above",
+	"continue",
+	"earlier",
+	"it",
+	"next",
+	"previous",
+	"same",
+	"that",
+	"these",
+	"this",
+	"those",
+]);
 const STOP_WORDS = new Set([
 	"a",
 	"an",
@@ -97,6 +113,12 @@ function normalize(value: string): string {
 	return value.normalize("NFKC").toLocaleLowerCase("en-US");
 }
 
+function compareText(left: string, right: string): number {
+	if (left < right) return -1;
+	if (left > right) return 1;
+	return 0;
+}
+
 function terms(value: string): string[] {
 	return normalize(value).match(/[\p{L}\p{N}]+/gu) ?? [];
 }
@@ -128,9 +150,7 @@ function characterNgrams(value: string): Set<string> {
 	return result;
 }
 
-function textFromMessage(
-	message: SessionMessageEntry["message"],
-): string {
+function textFromMessage(message: SessionMessageEntry["message"]): string {
 	if (message.role === "user") {
 		if (!Array.isArray(message.content)) return message.content;
 		return message.content
@@ -148,11 +168,17 @@ function textFromMessage(
 function boundedRecent(values: string[], limit: number): string[] {
 	const result: string[] = [];
 	let remaining = MAX_QUERY_CHARACTERS;
-	for (let index = values.length - 1; index >= 0 && result.length < limit; index -= 1) {
+	for (
+		let index = values.length - 1;
+		index >= 0 && result.length < limit;
+		index -= 1
+	) {
 		const value = values[index]?.trim();
 		if (!value) continue;
 		const characters = [...value];
-		const bounded = characters.slice(Math.max(0, characters.length - remaining)).join("");
+		const bounded = characters
+			.slice(Math.max(0, characters.length - remaining))
+			.join("");
 		if (!bounded) break;
 		result.unshift(bounded);
 		remaining -= [...bounded].length;
@@ -189,10 +215,7 @@ export function buildRoutingQuery(
 			.join(""),
 		exactPrompt: currentPrompt,
 		recentUserText: boundedRecent(users, MAX_RECENT_USER_MESSAGES),
-		recentAssistantText: boundedRecent(
-			assistants,
-			MAX_RECENT_ASSISTANT_MESSAGES,
-		),
+		recentAssistantText: boundedRecent(assistants, MAX_RECENT_ASSISTANT_MESSAGES),
 		summaries: boundedRecent(summaries, MAX_SUMMARIES),
 	};
 }
@@ -200,24 +223,28 @@ export function buildRoutingQuery(
 export function buildRoutingIndex(
 	skills: readonly RuntimeSkill[],
 ): RoutingIndex {
-	const documents = skills
-		.flatMap((skill): RoutingDocument[] => {
-			if (skill.disableModelInvocation) return [];
-			const descriptionTerms = terms(skill.description);
-			const nameTerms = terms(skill.name.replaceAll("-", " "));
-			return [{
-				skill,
-				normalizedName: normalize(skill.name),
-				nameTerms,
-				termCounts: countTerms(descriptionTerms),
-				bigrams: adjacentPairs(descriptionTerms),
-				characterNgrams: characterNgrams(
-					`${skill.name} ${skill.description}`,
-				),
-				termCount: descriptionTerms.length,
-			}];
-		})
-		.toSorted((left, right) => left.skill.name.localeCompare(right.skill.name));
+	const documents = Object.freeze(
+		skills
+			.flatMap((skill): RoutingDocument[] => {
+				if (skill.disableModelInvocation) return [];
+				const descriptionTerms = terms(skill.description);
+				const nameTerms = terms(skill.name.replaceAll("-", " "));
+				return [
+					Object.freeze({
+						skill,
+						normalizedName: normalize(skill.name),
+						nameTerms: Object.freeze(nameTerms),
+						termCounts: immutableMap(countTerms(descriptionTerms)),
+						bigrams: immutableSet(adjacentPairs(descriptionTerms)),
+						characterNgrams: immutableSet(
+							characterNgrams(`${skill.name} ${skill.description}`),
+						),
+						termCount: descriptionTerms.length,
+					}),
+				];
+			})
+			.toSorted((left, right) => compareText(left.skill.name, right.skill.name)),
+	);
 
 	const documentFrequency = new Map<string, number>();
 	let totalTerms = 0;
@@ -227,32 +254,66 @@ export function buildRoutingIndex(
 			documentFrequency.set(term, (documentFrequency.get(term) ?? 0) + 1);
 		}
 	}
-	return {
+	return Object.freeze({
 		documents,
-		documentFrequency,
+		documentFrequency: immutableMap(documentFrequency),
 		averageDocumentLength:
 			documents.length === 0 ? 0 : totalTerms / documents.length,
-	};
+	});
 }
 
-function queryText(query: RoutingQuery): string {
-	const combined = [
-		...query.summaries,
-		...query.recentUserText,
-		...query.recentAssistantText,
-		query.currentPrompt,
-	]
-		.filter(Boolean)
-		.join("\n");
-	const characters = [...combined];
-	return characters.slice(Math.max(0, characters.length - MAX_QUERY_CHARACTERS)).join("");
+function isReferentialPrompt(prompt: string): boolean {
+	const promptTerms = terms(prompt);
+	if (!promptTerms.some((term) => REFERENTIAL_TERMS.has(term))) return false;
+	const contentTerms = promptTerms.filter(
+		(term) => !REFERENTIAL_TERMS.has(term) && !STOP_WORDS.has(term),
+	);
+	return (
+		promptTerms.length <= 16 &&
+		contentTerms.length <= MAX_REFERENTIAL_CONTENT_TERMS
+	);
 }
 
-function containsExactName(normalizedQuery: string, normalizedName: string): boolean {
+function querySegments(query: RoutingQuery): string[] {
+	const candidates = (
+		isReferentialPrompt(query.currentPrompt)
+			? [
+					...query.summaries,
+					...query.recentUserText,
+					...query.recentAssistantText,
+					query.currentPrompt,
+				]
+			: [query.currentPrompt]
+	).filter((value) => value.trim().length > 0);
+	const result: string[] = [];
+	let remaining = MAX_QUERY_CHARACTERS;
+	for (
+		let index = candidates.length - 1;
+		index >= 0 && remaining > 0;
+		index -= 1
+	) {
+		const characters = [...(candidates[index] ?? "")];
+		const bounded = characters
+			.slice(Math.max(0, characters.length - remaining))
+			.join("");
+		if (bounded.length > 0) result.unshift(bounded);
+		remaining -= [...bounded].length;
+	}
+	return result;
+}
+
+function queryText(segments: readonly string[]): string {
+	return segments.join("\n");
+}
+
+function containsExactName(
+	normalizedQuery: string,
+	normalizedName: string,
+): boolean {
 	if (normalizedName.length === 0) return false;
 	let cursor = normalizedQuery.indexOf(normalizedName);
 	while (cursor !== -1) {
-		const before = cursor === 0 ? "" : normalizedQuery[cursor - 1] ?? "";
+		const before = cursor === 0 ? "" : (normalizedQuery[cursor - 1] ?? "");
 		const after = normalizedQuery[cursor + normalizedName.length] ?? "";
 		if (!/[\p{L}\p{N}]/u.test(before) && !/[\p{L}\p{N}]/u.test(after)) {
 			return true;
@@ -267,7 +328,8 @@ function bm25(
 	queryTerms: ReadonlyMap<string, number>,
 	index: RoutingIndex,
 ): number {
-	if (index.documents.length === 0 || index.averageDocumentLength === 0) return 0;
+	if (index.documents.length === 0 || index.averageDocumentLength === 0)
+		return 0;
 	const k1 = 1.2;
 	const b = 0.75;
 	let score = 0;
@@ -282,8 +344,7 @@ function bm25(
 		);
 		const denominator =
 			frequency +
-			k1 *
-				(1 - b + b * (document.termCount / index.averageDocumentLength));
+			k1 * (1 - b + b * (document.termCount / index.averageDocumentLength));
 		score +=
 			inverseDocumentFrequency *
 			((frequency * (k1 + 1)) / denominator) *
@@ -332,9 +393,8 @@ function scoreDocument(
 	}
 	const phraseScore = Math.min(
 		8,
-		[...document.bigrams].filter((value) =>
-			context.queryBigrams.has(value),
-		).length * 2,
+		[...document.bigrams].filter((value) => context.queryBigrams.has(value))
+			.length * 2,
 	);
 	const bm25Score = bm25(document, context.queryTerms, context.index);
 	const ngramScore = Math.min(
@@ -363,7 +423,7 @@ function estimatedCandidateTokens(skill: RuntimeSkill): number {
 function exactNames(evidence: readonly RoutingEvidence[]): string[] {
 	return evidence
 		.flatMap((item) => (item.exactName ? [item.name] : []))
-		.toSorted((left, right) => left.localeCompare(right));
+		.toSorted(compareText);
 }
 
 function fullSelection(
@@ -395,21 +455,31 @@ function emptySelection(): RoutingSelection {
 function scoreDocuments(
 	index: RoutingIndex,
 	query: RoutingQuery,
-	combinedQuery: string,
+	segments: readonly string[],
 ): RoutingEvidence[] | undefined {
-	const queryTermList = terms(combinedQuery).filter(
-		(term) => !STOP_WORDS.has(term),
+	const segmentTerms = segments.map((segment) =>
+		terms(segment).filter((term) => !STOP_WORDS.has(term)),
 	);
+	const queryTermList = segmentTerms.flat();
 	if (queryTermList.length === 0) return undefined;
+	const queryBigrams = new Set<string>();
+	const queryNgrams = new Set<string>();
+	for (let index = 0; index < segments.length; index += 1) {
+		for (const pair of adjacentPairs(segmentTerms[index] ?? [])) {
+			queryBigrams.add(pair);
+		}
+		const segment = segments[index] ?? "";
+		if (
+			[...segment].some((character) => (character.codePointAt(0) ?? 0) > 0x7f)
+		) {
+			for (const ngram of characterNgrams(segment)) queryNgrams.add(ngram);
+		}
+	}
 	const context: ScoreContext = {
 		normalizedExactQuery: normalize(query.exactPrompt),
 		queryTerms: countTerms(queryTermList),
-		queryBigrams: adjacentPairs(queryTermList),
-		queryNgrams: [...combinedQuery].some(
-			(character) => (character.codePointAt(0) ?? 0) > 0x7f,
-		)
-			? characterNgrams(combinedQuery)
-			: new Set(),
+		queryBigrams,
+		queryNgrams,
 		index,
 	};
 	return index.documents
@@ -418,7 +488,7 @@ function scoreDocuments(
 			(left, right) =>
 				Number(right.exactName) - Number(left.exactName) ||
 				right.score - left.score ||
-				left.name.localeCompare(right.name),
+				compareText(left.name, right.name),
 		);
 }
 
@@ -470,8 +540,7 @@ function chooseCandidates(
 		if (!skill) continue;
 		const skillTokens = estimatedCandidateTokens(skill);
 		const exceedsBudget =
-			selected.size > 0 &&
-			candidateTokens + skillTokens > MAX_CANDIDATE_TOKENS;
+			selected.size > 0 && candidateTokens + skillTokens > MAX_CANDIDATE_TOKENS;
 		if (exceedsBudget) continue;
 		selected.set(skill.name, skill);
 		candidateTokens += skillTokens;
@@ -487,13 +556,13 @@ function adaptiveSelection(
 	const mandatoryNames = exactNames(evidence);
 	return {
 		describedSkills: [...selected.values()].toSorted((left, right) =>
-			left.name.localeCompare(right.name),
+			compareText(left.name, right.name),
 		),
 		remainingNames: index.documents
 			.flatMap((document) =>
 				selected.has(document.skill.name) ? [] : [document.skill.name],
 			)
-			.toSorted((left, right) => left.localeCompare(right)),
+			.toSorted(compareText),
 		mandatoryNames,
 		fallback: false,
 		reason: mandatoryNames.length > 0 ? "exact-name" : "ranked",
@@ -506,16 +575,18 @@ export function selectRoutingSkills(
 	query: RoutingQuery,
 ): RoutingSelection {
 	if (index.documents.length === 0) return emptySelection();
-	const combinedQuery = queryText(query).trim();
+	const segments = querySegments(query);
+	const combinedQuery = queryText(segments).trim();
 	if (!combinedQuery) return fullSelection(index, "empty-query");
 
 	try {
-		const evidence = scoreDocuments(index, query, combinedQuery);
+		const evidence = scoreDocuments(index, query, segments);
 		if (!evidence) return fullSelection(index, "no-query-terms");
 		const fallbackReason = confidenceFallbackReason(evidence);
 		if (fallbackReason) return fullSelection(index, fallbackReason, evidence);
 		const selected = chooseCandidates(index, evidence);
-		if (selected.size === 0) return fullSelection(index, "no-candidates", evidence);
+		if (selected.size === 0)
+			return fullSelection(index, "no-candidates", evidence);
 		return adaptiveSelection(index, evidence, selected);
 	} catch {
 		return fullSelection(index, "retrieval-error");

@@ -1,53 +1,50 @@
-import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { performance } from "node:perf_hooks";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, relative, resolve } from "node:path";
 import {
-	createReadToolDefinition,
 	estimateTokens,
 	formatSkillsForPrompt,
 	loadSkillsFromDir,
 	parseFrontmatter,
-} from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
-import {
-	DEFAULT_DESCRIPTION_MAX,
-	DEFAULT_FILE_LIMIT,
-	renderAdaptiveCatalog,
-	renderCompactCatalog,
-} from "../packages/lazy-skill-tool/src/catalog.ts";
+	truncateHead,
+} from "../packages/lazy-skill-tool/node_modules/@earendil-works/pi-coding-agent/dist/index.js";
 import lazySkillTool from "../packages/lazy-skill-tool/src/index.ts";
+import {
+	normalizeDescription,
+	renderAdaptiveCatalog,
+	renderSafeCatalog,
+} from "../packages/lazy-skill-tool/src/catalog.ts";
+import { readConfig } from "../packages/lazy-skill-tool/src/config.ts";
+import { sampleRelatedFiles } from "../packages/lazy-skill-tool/src/files.ts";
 import { loadSkill } from "../packages/lazy-skill-tool/src/loader.ts";
 import {
 	buildRoutingIndex,
 	buildRoutingQuery,
 	selectRoutingSkills,
 } from "../packages/lazy-skill-tool/src/routing.ts";
-import { sampleRelatedFiles } from "../packages/lazy-skill-tool/src/files.ts";
+import { buildSkillSnapshot } from "../packages/lazy-skill-tool/src/snapshot.ts";
+import { compileSkillPolicy } from "../packages/lazy-skill-tool/src/policy.ts";
 
+const SCALE_COUNTS = [1, 5, 10, 25, 50, 100];
+const WARMUP_ITERATIONS = 100;
+const MEASURED_ITERATIONS = 500;
 const fixtureRoot = resolve("test/fixtures/lazy-skills");
-const realWorldFixtureRoot = resolve("test/fixtures/lazy-real-world");
-const skills = loadSkillsFromDir({
+const realWorldRoot = resolve("test/fixtures/lazy-real-world");
+const fixtureSkills = loadSkillsFromDir({
 	dir: fixtureRoot,
 	source: "benchmark",
 }).skills;
 const realWorldSkills = loadSkillsFromDir({
-	dir: realWorldFixtureRoot,
-	source: "benchmark-real-world",
+	dir: realWorldRoot,
+	source: "benchmark",
 }).skills;
-const selectedSkill = skills.find((skill) => skill.name === "alpha");
-if (!selectedSkill) throw new Error("Benchmark fixture skill alpha is missing.");
+const selectedSkill = fixtureSkills.find((skill) => skill.name === "alpha");
+if (!selectedSkill)
+	throw new Error("Benchmark fixture skill alpha is missing.");
 
-const RECORDED_PERFORMANCE_BASELINE = {
-	gitHead: "5be8af4",
-	defaultLoadP50Ms: 0.235,
-	defaultLoadP95Ms: 0.592,
-	performanceRating: 6.8,
-};
-const LEGACY_DESCRIPTION_MAX = 240;
-const WARMUP_ITERATIONS = 25;
-const MEASURED_ITERATIONS = 500;
+function characters(value) {
+	return [...value].length;
+}
 
 function bytes(value) {
 	return Buffer.byteLength(value, "utf8");
@@ -61,7 +58,157 @@ function tokens(value) {
 	});
 }
 
-function serializeToolDefinition(tool) {
+function metric(value) {
+	return {
+		characters: characters(value),
+		bytes: bytes(value),
+		tokens: tokens(value),
+	};
+}
+
+function reduction(smaller, larger) {
+	return ((1 - smaller / larger) * 100).toFixed(1);
+}
+
+function escapeXml(value) {
+	return value
+		.replace(/&/gu, "&amp;")
+		.replace(/</gu, "&lt;")
+		.replace(/>/gu, "&gt;")
+		.replace(/"/gu, "&quot;")
+		.replace(/'/gu, "&apos;");
+}
+
+function exactNameAttribute(name) {
+	return escapeXml(JSON.stringify(name).slice(1, -1));
+}
+
+function sortedVisible(skills) {
+	return skills
+		.filter((skill) => !skill.disableModelInvocation)
+		.toSorted((left, right) => left.name.localeCompare(right.name));
+}
+
+// Frozen v0.1.6 serialization. This standalone benchmark query exercises
+// scoring behavior that is unchanged from v0.1.6.
+function render016Entries(skills) {
+	return sortedVisible(skills).map(
+		(skill) =>
+			`<skill name="${exactNameAttribute(skill.name)}">${escapeXml(normalizeDescription(skill.description))}</skill>`,
+	);
+}
+
+function render016Full(skills) {
+	return [
+		"Call `skill` by exact name (JSON escapes); resolve paths from returned base.",
+		"<skills>",
+		...render016Entries(skills),
+		"</skills>",
+	].join("\n");
+}
+
+function render016Adaptive(describedSkills, remainingNames) {
+	if (remainingNames.length === 0) return render016Full(describedSkills);
+	return [
+		"Call `skill` by exact name; candidate descriptions are complete. Other exact names remain loadable.",
+		"<skills>",
+		...render016Entries(describedSkills),
+		"</skills>",
+		`<other_skill_names>${escapeXml(JSON.stringify(remainingNames.toSorted()))}</other_skill_names>`,
+	].join("\n");
+}
+
+function openCodeVerboseCatalog(skills) {
+	return [
+		"<available_skills>",
+		...sortedVisible(skills).flatMap((skill) => [
+			"  <skill>",
+			`    <name>${escapeXml(skill.name)}</name>`,
+			`    <description>${escapeXml(normalizeDescription(skill.description))}</description>`,
+			`    <location>${escapeXml(skill.filePath)}</location>`,
+			"  </skill>",
+		]),
+		"</available_skills>",
+	].join("\n");
+}
+
+function syntheticSkills(count) {
+	return Array.from({ length: count }, (_, index) => {
+		const name = `skill-${String(index).padStart(3, "0")}`;
+		const filePath = resolve(`/tmp/lazy-skill-benchmark/${name}/SKILL.md`);
+		return {
+			name,
+			description: `Use this skill for focused workflow ${index}, validation, and related project tasks. Trigger on workflow-${index}, exact evidence review, and safe execution.`,
+			filePath,
+			baseDir: dirname(filePath),
+			sourceInfo: {
+				path: filePath,
+				source: "benchmark",
+				scope: "temporary",
+				origin: "top-level",
+				baseDir: dirname(filePath),
+			},
+			disableModelInvocation: false,
+		};
+	});
+}
+
+function adaptiveSelection(skills, prompt) {
+	return selectRoutingSkills(
+		buildRoutingIndex(skills),
+		buildRoutingQuery(prompt),
+	);
+}
+
+function render016AdaptiveFor(skills, prompt) {
+	const selection = adaptiveSelection(skills, prompt);
+	return {
+		selection,
+		catalog: selection.fallback
+			? render016Full(skills)
+			: render016Adaptive(selection.describedSkills, selection.remainingNames),
+	};
+}
+
+function render020AdaptiveFor(skills, prompt) {
+	const selection = adaptiveSelection(skills, prompt);
+	return {
+		selection,
+		catalog: selection.fallback
+			? renderSafeCatalog(skills)
+			: renderAdaptiveCatalog(selection.describedSkills, selection.remainingNames),
+	};
+}
+
+function captureToolMetadata() {
+	const keys = [
+		"PI_LAZY_SKILL_DISABLE",
+		"PI_LAZY_SKILL_ROUTING",
+		"PI_LAZY_SKILL_DESCRIPTION_MAX",
+		"PI_LAZY_SKILL_FILE_LIMIT",
+	];
+	const previous = new Map(keys.map((key) => [key, process.env[key]]));
+	for (const key of keys) delete process.env[key];
+	let tool;
+	try {
+		lazySkillTool({
+			registerTool(definition) {
+				tool = definition;
+			},
+			registerCommand() {},
+			on() {},
+		});
+	} finally {
+		for (const [key, value] of previous) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+	}
+	if (!tool) throw new Error("Lazy skill tool metadata was not registered.");
+	return tool;
+}
+
+function serializeToolSchema(tool) {
 	return JSON.stringify({
 		name: tool.name,
 		description: tool.description,
@@ -69,18 +216,150 @@ function serializeToolDefinition(tool) {
 	});
 }
 
-function resultText(result) {
-	return result.content.map((item) => item.text ?? "").join("\n");
+const TOOL_016_SCHEMA = JSON.stringify({
+	name: "skill",
+	description: "Load skill; next offset/column continues.",
+	parameters: captureToolMetadata().parameters,
+});
+const tool020 = captureToolMetadata();
+const TOOL_020_SCHEMA = serializeToolSchema(tool020);
+const TOOL_020_SNIPPET = `- skill: ${tool020.promptSnippet}`;
+const TOOL_020_GUIDELINE = `- ${tool020.promptGuidelines[0]}`;
+const FIXED_020 = [TOOL_020_SCHEMA, TOOL_020_SNIPPET, TOOL_020_GUIDELINE].join(
+	"\n",
+);
+
+function componentTotal(catalog, fixed) {
+	return {
+		characters: characters(catalog) + characters(fixed),
+		bytes: bytes(catalog) + bytes(fixed),
+		tokens: tokens(catalog) + tokens(fixed),
+	};
 }
 
-function resultContext(result) {
-	try {
-		return JSON.parse(result.content[1]?.text ?? "{}");
-	} catch (error) {
-		throw new Error("Skill benchmark result contained invalid JSON context.", {
-			cause: error,
-		});
+async function loadSkill016(skill) {
+	const buffer = await readFile(skill.filePath);
+	const source = new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+	const normalized = source.replace(/\r\n?/gu, "\n");
+	const closingIndex = normalized.indexOf("\n---", 4);
+	const afterClosing = closingIndex + 4;
+	if (
+		!normalized.startsWith("---\n") ||
+		closingIndex === -1 ||
+		(afterClosing < normalized.length && normalized[afterClosing] !== "\n")
+	) {
+		throw new Error("Frozen v0.1.6 fixture frontmatter is invalid.");
 	}
+	const parsed = parseFrontmatter(source);
+	const currentName = parsed.frontmatter.name;
+	const canonicalName =
+		currentName === undefined || currentName === null || currentName === ""
+			? basename(dirname(skill.filePath))
+			: currentName;
+	if (
+		typeof parsed.frontmatter.description !== "string" ||
+		parsed.frontmatter.description.trim().length === 0 ||
+		typeof canonicalName !== "string" ||
+		canonicalName !== skill.name ||
+		parsed.frontmatter["disable-model-invocation"] === true ||
+		parsed.body.trim().length === 0
+	) {
+		throw new Error("Frozen v0.1.6 fixture validation failed.");
+	}
+	const lines = source.split("\n");
+	const bodyTruncation = truncateHead(
+		[lines[0] ?? "", ...lines.slice(1)].join("\n"),
+	);
+	const relatedFiles = await sampleRelatedFiles(
+		skill.baseDir,
+		skill.filePath,
+		0,
+	);
+	return {
+		body: bodyTruncation.content,
+		bodyOffset: 1,
+		bodyColumn: 1,
+		bodyTruncation,
+		relatedFiles,
+	};
+}
+
+// Paired samples isolate loader deltas from the allocation-heavy synthetic runs.
+const pairedLazyTiming = await measurePair(
+	() => loadSkill016(selectedSkill),
+	() => loadSkill(selectedSkill, 0),
+);
+const lazy016Invocation = pairedLazyTiming.left;
+const lazyInvocation = pairedLazyTiming.right;
+
+const scaleRows = SCALE_COUNTS.map((count) => {
+	const skills = syntheticSkills(count);
+	const prompt = "Run workflow-0 with skill-000 and verify its evidence.";
+	const stock = formatSkillsForPrompt(skills, "read");
+	const openCode = openCodeVerboseCatalog(skills);
+	const oldAdaptive = render016AdaptiveFor(skills, prompt);
+	const oldFull = render016Full(skills);
+	const safe = renderSafeCatalog(skills);
+	const adaptive = render020AdaptiveFor(skills, prompt);
+	for (const skill of skills) {
+		const complete = escapeXml(normalizeDescription(skill.description));
+		if (!safe.includes(complete)) {
+			throw new Error(
+				`v0.2.0 safe omitted a complete description at ${count} skills.`,
+			);
+		}
+	}
+	if (bytes(safe) >= bytes(stock) || tokens(safe) >= tokens(stock)) {
+		throw new Error(
+			`v0.2.0 safe catalog did not beat stock Pi at ${count} skills.`,
+		);
+	}
+	if (bytes(safe) >= bytes(openCode) || tokens(safe) >= tokens(openCode)) {
+		throw new Error(
+			`v0.2.0 safe catalog did not beat verbose OpenCode style at ${count} skills.`,
+		);
+	}
+	if (bytes(safe) > bytes(oldFull) || tokens(safe) > tokens(oldFull)) {
+		throw new Error(
+			`v0.2.0 safe catalog regressed from v0.1.6 full at ${count} skills.`,
+		);
+	}
+	if (
+		bytes(adaptive.catalog) > bytes(oldAdaptive.catalog) ||
+		tokens(adaptive.catalog) > tokens(oldAdaptive.catalog)
+	) {
+		throw new Error(
+			`v0.2.0 adaptive catalog regressed from v0.1.6 at ${count} skills.`,
+		);
+	}
+	return {
+		count,
+		stock: metric(stock),
+		openCode: metric(openCode),
+		oldFull: metric(oldFull),
+		oldFullTotal: componentTotal(oldFull, TOOL_016_SCHEMA),
+		oldAdaptive: metric(oldAdaptive.catalog),
+		oldAdaptiveTotal: componentTotal(oldAdaptive.catalog, TOOL_016_SCHEMA),
+		safe: metric(safe),
+		safeTotal: componentTotal(safe, FIXED_020),
+		adaptive: metric(adaptive.catalog),
+		adaptiveTotal: componentTotal(adaptive.catalog, FIXED_020),
+		selected: adaptive.selection.describedSkills.length,
+	};
+});
+
+const breakEven = scaleRows.find(
+	(row) => row.safeTotal.tokens < row.stock.tokens,
+)?.count;
+if (breakEven === undefined) {
+	throw new Error(
+		"v0.2.0 safe total context never reached stock Pi break-even.",
+	);
+}
+if (breakEven > 5) {
+	throw new Error(
+		`v0.2.0 safe total break-even was ${breakEven}, above the target of five skills.`,
+	);
 }
 
 function percentile(sorted, fraction) {
@@ -89,15 +368,7 @@ function percentile(sorted, fraction) {
 	];
 }
 
-async function measure(operation) {
-	for (let index = 0; index < WARMUP_ITERATIONS; index += 1) await operation();
-
-	const samples = [];
-	for (let index = 0; index < MEASURED_ITERATIONS; index += 1) {
-		const started = performance.now();
-		await operation();
-		samples.push(performance.now() - started);
-	}
+function timingSummary(samples) {
 	samples.sort((left, right) => left - right);
 	return {
 		p50: percentile(samples, 0.5).toFixed(3),
@@ -105,446 +376,148 @@ async function measure(operation) {
 	};
 }
 
-function syntheticSkills(count) {
-	return Array.from({ length: count }, (_, index) => ({
-		name: `skill-${String(index).padStart(3, "0")}`,
-		description: `Use this skill for focused workflow ${index}, validation, and related project tasks. Trigger on workflow-${index}, exact evidence review, and safe execution.`,
-		filePath: resolve(`/tmp/skills/skill-${index}/SKILL.md`),
-		baseDir: resolve(`/tmp/skills/skill-${index}`),
-		sourceInfo: {
-			path: "<benchmark>",
-			source: "benchmark",
-			scope: "temporary",
-			origin: "top-level",
-		},
-		disableModelInvocation: false,
-	}));
+async function measure(operation) {
+	for (let index = 0; index < WARMUP_ITERATIONS; index += 1) await operation();
+	const samples = [];
+	for (let index = 0; index < MEASURED_ITERATIONS; index += 1) {
+		const started = performance.now();
+		await operation();
+		samples.push(performance.now() - started);
+	}
+	return timingSummary(samples);
 }
 
-function createToolHarness() {
-	const handlers = new Map();
-	let tool;
-	const previous = {
-		limit: process.env.PI_LAZY_SKILL_FILE_LIMIT,
-		disabled: process.env.PI_LAZY_SKILL_DISABLE,
-		routing: process.env.PI_LAZY_SKILL_ROUTING,
-	};
-	delete process.env.PI_LAZY_SKILL_FILE_LIMIT;
-	delete process.env.PI_LAZY_SKILL_DISABLE;
-	delete process.env.PI_LAZY_SKILL_ROUTING;
-	try {
-		lazySkillTool({
-			registerTool(definition) {
-				tool = definition;
-			},
-			on(event, handler) {
-				handlers.set(event, handler);
-			},
-		});
-	} finally {
-		for (const [key, value] of Object.entries({
-			PI_LAZY_SKILL_FILE_LIMIT: previous.limit,
-			PI_LAZY_SKILL_DISABLE: previous.disabled,
-			PI_LAZY_SKILL_ROUTING: previous.routing,
-		})) {
-			if (value === undefined) delete process.env[key];
-			else process.env[key] = value;
+async function measurePair(leftOperation, rightOperation) {
+	for (let index = 0; index < WARMUP_ITERATIONS; index += 1) {
+		await leftOperation();
+		await rightOperation();
+	}
+	const leftSamples = [];
+	const rightSamples = [];
+	async function sample(operation, samples) {
+		const started = performance.now();
+		await operation();
+		samples.push(performance.now() - started);
+	}
+	for (let index = 0; index < MEASURED_ITERATIONS; index += 1) {
+		if (index % 2 === 0) {
+			await sample(leftOperation, leftSamples);
+			await sample(rightOperation, rightSamples);
+		} else {
+			await sample(rightOperation, rightSamples);
+			await sample(leftOperation, leftSamples);
 		}
 	}
-	const handler = handlers.get("before_agent_start");
-	if (!tool || typeof handler !== "function") {
-		throw new Error("Skill tool benchmark harness did not initialize.");
-	}
 	return {
-		tool,
-		before(event, entries = []) {
-			return handler(event, {
-				sessionManager: { buildContextEntries: () => entries },
-			});
-		},
+		left: timingSummary(leftSamples),
+		right: timingSummary(rightSamples),
 	};
 }
 
-function escapeXml(value) {
-	return value
-		.replace(/&/g, "&amp;")
-		.replace(/</g, "&lt;")
-		.replace(/>/g, "&gt;")
-		.replace(/"/g, "&quot;")
-		.replace(/'/g, "&apos;");
-}
-
-function compactLegacyDescription(description) {
-	const normalized = description.replace(/\s+/gu, " ").trim();
-	const characters = [...normalized];
-	if (characters.length <= LEGACY_DESCRIPTION_MAX) return normalized;
-	let shortened = characters
-		.slice(0, LEGACY_DESCRIPTION_MAX - 1)
-		.join("")
-		.trimEnd();
-	const boundary = shortened.lastIndexOf(" ");
-	if (boundary > 0) shortened = shortened.slice(0, boundary).trimEnd();
-	return `${shortened}…`;
-}
-
-function legacyCatalog(catalogSkills) {
-	const visible = catalogSkills
-		.filter((skill) => !skill.disableModelInvocation)
-		.toSorted((left, right) => left.name.localeCompare(right.name));
-	return [
-		"The following skills provide specialized instructions for specific tasks.",
-		"When a task matches a skill's description, use the `skill` tool with that exact skill name before proceeding.",
-		"When a skill references a relative path, resolve it from the base directory returned by the `skill` tool.",
-		"",
-		"<available_skills>",
-		...visible.flatMap((skill) => [
-			"  <skill>",
-			`    <name>${escapeXml(skill.name)}</name>`,
-			`    <description>${escapeXml(compactLegacyDescription(skill.description))}</description>`,
-			"  </skill>",
-		]),
-		"</available_skills>",
-	].join("\n");
-}
-
-const LEGACY_TOOL = {
-	name: "skill",
-	description:
-		"Load a specialized skill when the task matches a skill listed in <available_skills>. Use the exact skill name. The tool returns the complete skill instructions, base directory, and sampled related resources.",
-	parameters: Type.Object(
-		{
-			name: Type.String({
-				description: "Exact skill name from available_skills",
-				minLength: 1,
-			}),
-		},
-		{ additionalProperties: false },
-	),
-};
-const legacyToolSchema = serializeToolDefinition(LEGACY_TOOL);
-const FULL_015_TOOL = {
-	name: "skill",
-	description:
-		"Load a listed skill; use returned next offset/column to continue.",
-	parameters: Type.Object(
-		{
-			name: Type.String({ minLength: 1 }),
-			offset: Type.Optional(Type.Integer({ minimum: 1 })),
-			column: Type.Optional(Type.Integer({ minimum: 1 })),
-		},
-		{ additionalProperties: false },
-	),
-};
-const full015ToolSchema = serializeToolDefinition(FULL_015_TOOL);
-
-async function legacyResult(skill) {
-	const raw = await readFile(skill.filePath, "utf8");
-	const body = parseFrontmatter(raw).body.trim();
-	const related = await sampleRelatedFiles(skill.baseDir, skill.filePath, 10);
-	const sampled = related.truncated || related.files.length > 0;
-	return [
-		`<skill_content name="${escapeXml(skill.name)}">`,
-		`# Skill: ${escapeXml(skill.name)}`,
-		"",
-		"<skill_body><![CDATA[",
-		body.replaceAll("]]>", "]]]]><![CDATA[>"),
-		"]]></skill_body>",
-		"",
-		`Base directory for this skill: ${escapeXml(skill.baseDir)}`,
-		"Relative paths referenced by this skill are relative to this base directory.",
-		`Note: related file list is sampled${sampled ? "." : " and empty."}`,
-		"",
-		`<skill_files sampled="${sampled ? "true" : "false"}">`,
-		...related.files.map((file) => `  <file>${escapeXml(file)}</file>`),
-		"</skill_files>",
-		"</skill_content>",
-	].join("\n");
-}
-
-function adaptiveCatalog(catalogSkills, prompt) {
-	const selection = selectRoutingSkills(
-		buildRoutingIndex(catalogSkills),
-		buildRoutingQuery(prompt),
-	);
-	return {
-		selection,
-		catalog: selection.fallback
-			? renderCompactCatalog(catalogSkills, {
-					descriptionMax: DEFAULT_DESCRIPTION_MAX,
-				})
-			: renderAdaptiveCatalog(
-					selection.describedSkills,
-					selection.remainingNames,
-					{ descriptionMax: DEFAULT_DESCRIPTION_MAX },
-				),
-	};
-}
-
-function variant(label, catalog, schema, args, result) {
-	const staticBytes = bytes(catalog) + bytes(schema);
-	const staticTokens = tokens(catalog) + tokens(schema);
-	const exchangeBytes = bytes(args) + bytes(result);
-	const exchangeTokens = tokens(args) + tokens(result);
-	const postSkillBytes = staticBytes + exchangeBytes;
-	const postSkillTokens = staticTokens + exchangeTokens;
-	return {
-		label,
-		staticBytes,
-		staticTokens,
-		exchangeBytes,
-		exchangeTokens,
-		postSkillBytes,
-		postSkillTokens,
-		twoRequestBytes: staticBytes + postSkillBytes,
-		twoRequestTokens: staticTokens + postSkillTokens,
-	};
-}
-
-async function compareWorkflow(
-	label,
-	catalogSkills,
-	selected,
-	prompt,
-	harness,
-	toolSchema,
-) {
-	const stockPrompt = formatSkillsForPrompt(catalogSkills);
-	await harness.before({
-		type: "before_agent_start",
-		prompt,
-		systemPrompt: stockPrompt,
-		systemPromptOptions: {
-			cwd: dirname(selected.filePath),
-			skills: catalogSkills,
-			selectedTools: ["skill"],
-		},
-	});
-	const currentToolResult = await harness.tool.execute("benchmark", {
-		name: selected.name,
-	});
-	const currentResult = resultText(currentToolResult);
-	const currentContext = resultContext(currentToolResult);
-	const full015Result = [
-		currentToolResult.content[0]?.text ?? "",
-		JSON.stringify({ skill: selected.name, ...currentContext }),
-	].join("\n");
-	const legacy = await legacyResult(selected);
-	const adaptive = adaptiveCatalog(catalogSkills, prompt);
-	const args = JSON.stringify({ name: selected.name });
-	return {
-		label,
-		selection: adaptive.selection,
-		rows: [
-			variant("0.1.1", legacyCatalog(catalogSkills), legacyToolSchema, args, legacy),
-			variant(
-				"0.1.5 full",
-				renderCompactCatalog(catalogSkills, {
-					descriptionMax: DEFAULT_DESCRIPTION_MAX,
-				}),
-				full015ToolSchema,
-				args,
-				full015Result,
-			),
-			variant(
-				"0.1.6 adaptive",
-				adaptive.catalog,
-				toolSchema,
-				args,
-				currentResult,
-			),
-		],
-	};
-}
-
-function localSkills() {
-	const roots = [
-		join(homedir(), ".agents/skills"),
-		join(
-			homedir(),
-			".pi/agent/npm/node_modules/pi-mcp-adapter/skills",
-		),
-		join(homedir(), ".pi/agent/npm/node_modules/pi-subagents/skills"),
-		join(homedir(), ".pi/agent/npm/node_modules/pi-lens/skills"),
-	];
-	const byName = new Map();
-	for (const root of roots) {
-		if (!existsSync(root)) continue;
-		for (const skill of loadSkillsFromDir({ dir: root, source: "local" }).skills) {
-			if (!skill.disableModelInvocation && !byName.has(skill.name)) {
-				byName.set(skill.name, skill);
-			}
-		}
-	}
-	return [...byName.values()];
-}
-
-const harness = createToolHarness();
-const toolSchema = serializeToolDefinition(harness.tool);
-const fixtureComparison = await compareWorkflow(
-	`fixtures (${skills.length}) / alpha`,
-	skills,
-	selectedSkill,
-	"Use the alpha skill for this task.",
-	harness,
-	toolSchema,
+const config = readConfig({}).config;
+const policy = compileSkillPolicy();
+const startupSkills = syntheticSkills(100);
+const safeStartup = await measure(() =>
+	buildSkillSnapshot(startupSkills, config, policy),
 );
-const realWorldSkill = realWorldSkills[0];
-const realWorldComparison = realWorldSkill
-	? await compareWorkflow(
-			`real-world (${realWorldSkills.length}) / ${realWorldSkill.name}`,
-			realWorldSkills,
-			realWorldSkill,
-			`Use ${realWorldSkill.name} to handle this production incident.`,
-			harness,
-			toolSchema,
-		)
-	: undefined;
-const installedSkills = localSkills();
-const ponytail = installedSkills.find((skill) => skill.name === "ponytail");
-const localComparison = ponytail
-	? await compareWorkflow(
-			`local (${installedSkills.length}) / ponytail`,
-			installedSkills,
-			ponytail,
-			"Try to load the ponytail skill please.",
-			harness,
-			toolSchema,
-		)
-	: undefined;
-const comparisons = [
-	fixtureComparison,
-	...(realWorldComparison ? [realWorldComparison] : []),
-	...(localComparison ? [localComparison] : []),
-];
-for (const comparison of comparisons) {
-	const legacy = comparison.rows.find((row) => row.label === "0.1.1");
-	const adaptive = comparison.rows.find(
-		(row) => row.label === "0.1.6 adaptive",
-	);
-	if (!legacy || !adaptive) throw new Error("Benchmark comparison row is missing.");
-	if (comparison.selection.fallback) {
-		throw new Error(`${comparison.label} unexpectedly used full fallback.`);
-	}
-	if (adaptive.twoRequestTokens > legacy.twoRequestTokens) {
-		throw new Error(
-			`${comparison.label} adaptive cumulative tokens exceed 0.1.1.`,
-		);
-	}
-}
-if (
-	localComparison &&
-	(localComparison.rows.find((row) => row.label === "0.1.6 adaptive")
-		?.postSkillTokens ?? Number.POSITIVE_INFINITY) > 3_286
-) {
-	throw new Error("Local Ponytail post-skill context exceeds 3,286 tokens.");
-}
-
-const scaleRows = [1, 2, 5, 10, 20, 50, 100, 500, 1000].map((count) => {
-	const catalogSkills = syntheticSkills(count);
-	const adaptive = adaptiveCatalog(
-		catalogSkills,
-		"Run workflow-0 with skill-000 and verify its evidence.",
-	);
-	return {
-		count,
-		stock: tokens(formatSkillsForPrompt(catalogSkills)),
-		legacy: tokens(legacyCatalog(catalogSkills)) + tokens(legacyToolSchema),
-		full:
-			tokens(
-				renderCompactCatalog(catalogSkills, {
-					descriptionMax: DEFAULT_DESCRIPTION_MAX,
-				}),
-			) + tokens(full015ToolSchema),
-		adaptive: tokens(adaptive.catalog) + tokens(toolSchema),
-		selected: adaptive.selection.describedSkills.length,
-		fallback: adaptive.selection.fallback,
-	};
-});
-
-const rawRead = await measure(async () => {
-	const content = await readFile(selectedSkill.filePath, "utf8");
-	parseFrontmatter(content).body.trim();
-});
-const defaultLoad = await measure(() =>
-	loadSkill(selectedSkill, DEFAULT_FILE_LIMIT),
+const adaptiveStartup = await measure(() =>
+	buildSkillSnapshot(startupSkills, { ...config, routing: "adaptive" }, policy),
 );
-const sampledLoad = await measure(() => loadSkill(selectedSkill, 10));
-const routing22 = installedSkills.length > 0
-	? await measure(() => {
-			selectRoutingSkills(
-				buildRoutingIndex(installedSkills),
-				buildRoutingQuery("Try to load the ponytail skill please."),
-			);
-		})
-	: undefined;
-const routing1000Skills = syntheticSkills(1000);
-const routing1000Index = buildRoutingIndex(routing1000Skills);
-const routing1000 = await measure(() => {
+const routingIndex = buildRoutingIndex(startupSkills);
+const adaptiveRouting = await measure(() =>
 	selectRoutingSkills(
-		routing1000Index,
+		routingIndex,
 		buildRoutingQuery("Run workflow-0 with skill-000."),
-	);
-});
-await harness.before({
-	type: "before_agent_start",
-	prompt: "Use alpha.",
-	systemPrompt: formatSkillsForPrompt(skills),
-	systemPromptOptions: {
-		cwd: fixtureRoot,
-		skills,
-		selectedTools: ["skill"],
-	},
-});
-const fullToolLoad = await measure(() =>
-	harness.tool.execute("benchmark", { name: selectedSkill.name }),
+	),
 );
-const nativeReadTool = createReadToolDefinition(fixtureRoot);
-const nativeReadResult = await nativeReadTool.execute("benchmark", {
-	path: selectedSkill.filePath,
-});
 
-const lines = [
-	`Recorded performance baseline: ${RECORDED_PERFORMANCE_BASELINE.gitHead} (${RECORDED_PERFORMANCE_BASELINE.performanceRating}/10)`,
-	`Schemas: 0.1.1 ${bytes(legacyToolSchema)} B / ${tokens(legacyToolSchema)} tok; 0.1.5 ${bytes(full015ToolSchema)} B / ${tokens(full015ToolSchema)} tok; 0.1.6 ${bytes(toolSchema)} B / ${tokens(toolSchema)} tok`,
-	"",
-	"Workflow component sums (extension-attributable; same two-request shape):",
-];
-for (const comparison of comparisons) {
-	lines.push(
-		`  ${comparison.label}`,
-		`    selected: ${comparison.selection.describedSkills.map((skill) => skill.name).join(", ") || "full fallback"}; remaining names ${comparison.selection.remainingNames.length}; reason ${comparison.selection.reason}`,
+async function loadedPayloadRow(skill) {
+	const source = await readFile(skill.filePath, "utf8");
+	const oldPayload = [
+		source,
+		JSON.stringify({
+			base: skill.baseDir,
+			fileFromBase: relative(skill.baseDir, skill.filePath),
+		}),
+	].join("\n");
+	const loaded = await loadSkill(skill, 0);
+	const newPayload = [loaded.body, JSON.stringify({ base: skill.baseDir })].join(
+		"\n",
 	);
-	for (const row of comparison.rows) {
-		lines.push(
-			`    ${row.label.padEnd(14)} static ${String(row.staticTokens).padStart(5)} tok | exchange ${String(row.exchangeTokens).padStart(5)} | post-skill ${String(row.postSkillTokens).padStart(5)} | two-request component sum ${String(row.twoRequestTokens).padStart(5)} tok`,
-		);
+	if (loaded.body !== parseFrontmatter(source).body) {
+		throw new Error(`Loaded body mismatch for ${skill.name}.`);
 	}
+	if (
+		bytes(newPayload) > bytes(oldPayload) ||
+		tokens(newPayload) > tokens(oldPayload)
+	) {
+		throw new Error(`Loaded payload regressed from v0.1.6 for ${skill.name}.`);
+	}
+	return {
+		name: skill.name,
+		old: metric(oldPayload),
+		current: metric(newPayload),
+	};
 }
-lines.push(
+
+const payloadRows = [];
+for (const skill of [selectedSkill, ...realWorldSkills.slice(0, 1)]) {
+	payloadRows.push(await loadedPayloadRow(skill));
+}
+
+const fixedRows = [
+	["v0.1.6 tool schema", TOOL_016_SCHEMA],
+	["v0.2.0 tool schema", TOOL_020_SCHEMA],
+	["v0.2.0 prompt snippet", TOOL_020_SNIPPET],
+	["v0.2.0 guideline", TOOL_020_GUIDELINE],
+];
+const lines = [
+	"Lazy skill context benchmark (Pi estimateTokens; component token estimates are summed)",
 	"",
-	"Static scale (catalog + schema tokens):",
+	"Fixed extension context:",
+	...fixedRows.map(([label, value]) => {
+		const measured = metric(value);
+		return `  ${label.padEnd(24)} ${String(measured.bytes).padStart(5)} B  ${String(measured.tokens).padStart(4)} tok`;
+	}),
+	`  ${"v0.2.0 fixed total".padEnd(24)} ${String(bytes(FIXED_020)).padStart(5)} B  ${String(tokens(FIXED_020)).padStart(4)} tok`,
+	"",
+	"Catalog / total context by representative corpus:",
+	"  count | stock Pi | OpenCode verbose | 0.1.6 full | 0.1.6 adaptive | 0.2.0 safe | 0.2.0 adaptive",
 	...scaleRows.map(
 		(row) =>
-			`  ${String(row.count).padStart(4)} skills  stock ${String(row.stock).padStart(6)} | 0.1.1 ${String(row.legacy).padStart(6)} | 0.1.5 ${String(row.full).padStart(6)} | 0.1.6 ${String(row.adaptive).padStart(6)} (${row.selected} described${row.fallback ? ", fallback" : ""})`,
+			`  ${String(row.count).padStart(5)} | ${String(row.stock.tokens).padStart(5)} tok | ${String(row.openCode.tokens).padStart(5)} tok | ${String(row.oldFull.tokens).padStart(5)}/${String(row.oldFullTotal.tokens).padStart(5)} | ${String(row.oldAdaptive.tokens).padStart(5)}/${String(row.oldAdaptiveTotal.tokens).padStart(5)} | ${String(row.safe.tokens).padStart(5)}/${String(row.safeTotal.tokens).padStart(5)} | ${String(row.adaptive.tokens).padStart(5)}/${String(row.adaptiveTotal.tokens).padStart(5)} (${row.selected} described)`,
+	),
+	"  Version columns are catalog/total tokens; stock and OpenCode have no lazy-tool fixed cost.",
+	`  v0.2.0 safe total first beats stock Pi at ${breakEven} representative skill(s).`,
+	"",
+	"Exact serialized catalog characters / UTF-8 bytes:",
+	...scaleRows.map(
+		(row) =>
+			`  ${String(row.count).padStart(5)} skills  stock ${String(row.stock.characters).padStart(6)}/${String(row.stock.bytes).padStart(6)}  OpenCode ${String(row.openCode.characters).padStart(6)}/${String(row.openCode.bytes).padStart(6)}  0.1.6-full ${String(row.oldFull.characters).padStart(6)}/${String(row.oldFull.bytes).padStart(6)}  0.1.6-adaptive ${String(row.oldAdaptive.characters).padStart(6)}/${String(row.oldAdaptive.bytes).padStart(6)}  0.2.0-safe ${String(row.safe.characters).padStart(6)}/${String(row.safe.bytes).padStart(6)}  0.2.0-adaptive ${String(row.adaptive.characters).padStart(6)}/${String(row.adaptive.bytes).padStart(6)}`,
 	),
 	"",
-	`Warm operations (${MEASURED_ITERATIONS} iterations, milliseconds):`,
-	`  raw read + parse       p50 ${rawRead.p50}  p95 ${rawRead.p95}`,
-	`  default load           p50 ${defaultLoad.p50}  p95 ${defaultLoad.p95}`,
-	`  sampled load           p50 ${sampledLoad.p50}  p95 ${sampledLoad.p95}`,
-	`  full skill tool        p50 ${fullToolLoad.p50}  p95 ${fullToolLoad.p95}`,
-	...(routing22
-		? [`  local routing (${installedSkills.length})    p50 ${routing22.p50}  p95 ${routing22.p95}`]
-		: []),
-	`  routing (1000)         p50 ${routing1000.p50}  p95 ${routing1000.p95}`,
-	`  recorded old load      p50 ${RECORDED_PERFORMANCE_BASELINE.defaultLoadP50Ms.toFixed(3)}  p95 ${RECORDED_PERFORMANCE_BASELINE.defaultLoadP95Ms.toFixed(3)}`,
+	"v0.2.0 safe catalog reduction versus stock Pi:",
+	...scaleRows.map(
+		(row) =>
+			`  ${String(row.count).padStart(5)} skills  characters ${reduction(row.safe.characters, row.stock.characters).padStart(5)}%  bytes ${reduction(row.safe.bytes, row.stock.bytes).padStart(5)}%  tokens ${reduction(row.safe.tokens, row.stock.tokens).padStart(5)}%`,
+	),
 	"",
-	`Native read result diagnostic: ${bytes(resultText(nativeReadResult))} B / ${tokens(resultText(nativeReadResult))} tokens`,
-	"Token values use Pi estimateTokens independently per component; sums are not complete provider request estimates.",
-	"Common context is excluded only where explicitly labeled extension-attributable.",
-	"Local skill measurement is optional and appears only when installed skill roots exist.",
-	"Fallback cases preserve the complete 0.1.5 catalog and are not claimed to beat 0.1.1.",
-	"Timing is machine-specific; compare runs on the same workstation.",
+	"Loaded model-facing payload (frontmatter and redundant metadata removal):",
+	...payloadRows.map(
+		(row) =>
+			`  ${row.name}: 0.1.6 ${row.old.characters} chars/${row.old.bytes} B/${row.old.tokens} tok -> 0.2.0 ${row.current.characters} chars/${row.current.bytes} B/${row.current.tokens} tok`,
+	),
 	"",
-);
+	`Warm timings (${MEASURED_ITERATIONS} iterations, milliseconds; machine-specific):`,
+	`  safe snapshot (100)     p50 ${safeStartup.p50}  p95 ${safeStartup.p95}`,
+	`  adaptive snapshot (100) p50 ${adaptiveStartup.p50}  p95 ${adaptiveStartup.p95}`,
+	`  adaptive route (100)    p50 ${adaptiveRouting.p50}  p95 ${adaptiveRouting.p95}`,
+	`  frozen v0.1.6 load     p50 ${lazy016Invocation.p50}  p95 ${lazy016Invocation.p95}`,
+	`  v0.2.0 lazy invocation  p50 ${lazyInvocation.p50}  p95 ${lazyInvocation.p95}`,
+	"",
+	"Gates: safe catalog beats stock, verbose, and frozen v0.1.6 full catalogs at every count; safe retains complete descriptions; v0.2.0 adaptive and loaded payloads do not exceed frozen v0.1.6 counterparts.",
+	"Catalog visibility safety is structural. This benchmark does not measure live-model skill-selection accuracy or provider billing.",
+	"Timing values are not cross-machine performance guarantees.",
+	"",
+];
 process.stdout.write(lines.join("\n"));

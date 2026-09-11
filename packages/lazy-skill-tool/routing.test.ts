@@ -15,6 +15,7 @@ import { transformSkillPrompt } from "./src/prompt.ts";
 import {
 	buildRoutingIndex,
 	buildRoutingQuery,
+	discloseAdaptiveCatalog,
 	selectRoutingSkills,
 	type RoutingSelection,
 } from "./src/routing.ts";
@@ -83,10 +84,7 @@ test("frozen representative corpus has complete recall without fallback", () => 
 	const index = buildRoutingIndex(corpusSkills);
 	let fallbackCount = 0;
 	for (const item of CORPUS.cases) {
-		const selection = selectRoutingSkills(
-			index,
-			buildRoutingQuery(item.prompt),
-		);
+		const selection = selectRoutingSkills(index, buildRoutingQuery(item.prompt));
 		if (selection.fallback) fallbackCount += 1;
 		const selected = names(selection);
 		for (const expected of item.expected) {
@@ -97,6 +95,20 @@ test("frozen representative corpus has complete recall without fallback", () => 
 		}
 	}
 	assert.ok(fallbackCount / CORPUS.cases.length <= 0.1);
+});
+
+test("routing index internals are immutable snapshot data", () => {
+	const index = buildRoutingIndex(representativeSkills);
+	const document = index.documents[0];
+	assert.ok(document);
+	assert.ok(Object.isFrozen(index));
+	assert.ok(Object.isFrozen(index.documents));
+	assert.ok(Object.isFrozen(document));
+	assert.ok(Object.isFrozen(document.nameTerms));
+	assert.equal("set" in index.documentFrequency, false);
+	assert.equal("set" in document.termCounts, false);
+	assert.equal("add" in document.bigrams, false);
+	assert.equal("add" in document.characterNgrams, false);
 });
 
 test("adaptive routing prioritizes exact names and preserves multiple mandatory names", () => {
@@ -126,8 +138,8 @@ test("adaptive routing prioritizes exact names and preserves multiple mandatory 
 	assert.ok(selection.describedSkills.length > 5);
 });
 
-test("six or more non-exact near ties use the complete fallback", () => {
-	const tied = Array.from({ length: 7 }, (_, index) =>
+test("nine or more non-exact near ties use the complete fallback", () => {
+	const tied = Array.from({ length: 9 }, (_, index) =>
 		skill(
 			`ambiguous-${index}`,
 			"Shared ambiguous workflow for evidence reconciliation.",
@@ -139,7 +151,7 @@ test("six or more non-exact near ties use the complete fallback", () => {
 	);
 	assert.equal(selection.fallback, true);
 	assert.equal(selection.reason, "ambiguous");
-	assert.equal(selection.describedSkills.length, 7);
+	assert.equal(selection.describedSkills.length, 9);
 	assert.deepEqual(selection.remainingNames, []);
 });
 
@@ -164,7 +176,9 @@ test("an exact name anywhere in an oversized prompt remains mandatory", () => {
 test("adaptive routing keeps the complete best overlapping candidate", () => {
 	const selection = selectRoutingSkills(
 		buildRoutingIndex(representativeSkills),
-		buildRoutingQuery("Review this code for over-engineering and needless abstractions."),
+		buildRoutingQuery(
+			"Review this code for over-engineering and needless abstractions.",
+		),
 	);
 
 	assert.equal(selection.fallback, false);
@@ -180,7 +194,10 @@ test("adaptive routing uses phrases, telemetry terms, and Unicode n-grams", () =
 	const index = buildRoutingIndex(representativeSkills);
 	const cases = [
 		["make a PowerPoint slide deck", "pptx"],
-		["investigate production latency using logs and traces", "debug-with-grafana"],
+		[
+			"investigate production latency using logs and traces",
+			"debug-with-grafana",
+		],
 		["日本語のプレゼンテーション資料を作成", "pptx"],
 	] as const;
 
@@ -231,16 +248,120 @@ test("recent user, assistant, and summary context resolves short follow-ups", ()
 	assert.ok(!names(selection).includes("debug-with-grafana"));
 });
 
+test("standalone current input excludes stale history and phrases never cross messages", () => {
+	const entries = [
+		{
+			type: "message",
+			message: {
+				role: "user",
+				content: "Create a PowerPoint presentation slide deck.",
+			},
+		},
+		{
+			type: "message",
+			message: {
+				role: "assistant",
+				content: [{ type: "text", text: "production" }],
+			},
+		},
+	] as const;
+	const selection = selectRoutingSkills(
+		buildRoutingIndex(representativeSkills),
+		buildRoutingQuery(
+			"Investigate latency using logs and traces.",
+			entries as unknown as Parameters<typeof buildRoutingQuery>[1],
+		),
+	);
+	assert.equal(selection.fallback, false);
+	assert.ok(names(selection).includes("debug-with-grafana"));
+	assert.ok(!names(selection).includes("pptx"));
+
+	const specificFollowUp = selectRoutingSkills(
+		buildRoutingIndex(representativeSkills),
+		buildRoutingQuery(
+			"Now use this to investigate latency using logs and traces.",
+			[
+				{
+					type: "message",
+					message: {
+						role: "user",
+						content: "Create a PowerPoint presentation slide deck. ".repeat(100),
+					},
+				},
+			] as unknown as Parameters<typeof buildRoutingQuery>[1],
+		),
+	);
+	assert.deepEqual(names(specificFollowUp), ["debug-with-grafana"]);
+
+	const referential = buildRoutingQuery("continue", [
+		{
+			type: "message",
+			message: { role: "user", content: "production" },
+		},
+		{
+			type: "message",
+			message: { role: "user", content: "latency" },
+		},
+	] as unknown as Parameters<typeof buildRoutingQuery>[1]);
+	const evidence = selectRoutingSkills(
+		buildRoutingIndex([
+			skill("phrase-only", "Handle production latency incidents."),
+		]),
+		referential,
+	).evidence[0];
+	assert.equal(evidence?.phraseScore, 0);
+});
+
 test("uncertain and empty queries preserve the complete catalog", () => {
 	const index = buildRoutingIndex(representativeSkills);
 	for (const prompt of ["", "What is the capital of France?"]) {
 		const selection = selectRoutingSkills(index, buildRoutingQuery(prompt));
 		assert.equal(selection.fallback, true);
-		assert.deepEqual(names(selection),
+		assert.deepEqual(
+			names(selection),
 			representativeSkills.map((item) => item.name).toSorted(),
 		);
 		assert.deepEqual(selection.remainingNames, []);
 	}
+});
+
+test("exact-name pinning does not raise the score floor for unrelated candidates", () => {
+	const pinned = skill(
+		"deploy",
+		"Ship application releases to production clusters.",
+	);
+	const relevant = skill(
+		"postgres",
+		"Investigate database connection exhaustion, pooling, and idle client storms.",
+	);
+	const filler = Array.from({ length: 8 }, (_, index) =>
+		skill(
+			`filler-${index}`,
+			"Generic helper for unrelated office documentation tasks.",
+		),
+	);
+	const selection = selectRoutingSkills(
+		buildRoutingIndex([pinned, relevant, ...filler]),
+		buildRoutingQuery(
+			"Use deploy while you investigate database connection exhaustion.",
+		),
+	);
+	assert.equal(selection.fallback, false);
+	assert.deepEqual(selection.mandatoryNames, ["deploy"]);
+	assert.ok(names(selection).includes("deploy"));
+	assert.ok(names(selection).includes("postgres"));
+});
+
+test("multi-intent prompts describe each clause's skill instead of top-one coverage", () => {
+	const selection = selectRoutingSkills(
+		buildRoutingIndex(representativeSkills),
+		buildRoutingQuery(
+			"Create a PowerPoint slide deck while you investigate production latency using logs and traces.",
+		),
+	);
+	assert.equal(selection.fallback, false);
+	assert.ok(names(selection).includes("pptx"));
+	assert.ok(names(selection).includes("debug-with-grafana"));
 });
 
 test("exact-name priority resists keyword-stuffed descriptions", () => {
@@ -259,7 +380,7 @@ test("exact-name priority resists keyword-stuffed descriptions", () => {
 
 test("adaptive catalog round-trips every remaining exact name", () => {
 	const described = [skill("alpha", "Complete alpha routing description.")];
-	const remaining = ["line\nbreak", "tab\tname", "nul\0name", "a&<\"b"];
+	const remaining = ["line\nbreak", "tab\tname", "nul\0name", 'a&<"b'];
 	const catalog = renderAdaptiveCatalog(described, remaining, CONFIG);
 	const encoded = catalog.match(
 		/<other_skill_names>(.*)<\/other_skill_names>/u,
@@ -298,6 +419,67 @@ test("prompt validation uses the full snapshot while rendering candidates", () =
 	assert.ok(!result.prompt.includes("Complete beta description."));
 	assert.ok(result.prompt.includes('["beta","gamma"]'));
 	assert.ok(!result.prompt.includes("/skills/beta/SKILL.md"));
+});
+
+test("adaptive disclosure uses the catalog token budget instead of a skill-count cutoff", () => {
+	const skills = Array.from({ length: 6 }, (_, index) =>
+		skill(
+			`budget-${index}`,
+			`Complete description for budget skill ${index} with enough routing text to accumulate tokens.`,
+		),
+	);
+	const index = buildRoutingIndex(skills);
+	const query = buildRoutingQuery("What is the capital of France?");
+	const inexpensive = discloseAdaptiveCatalog({
+		index,
+		query,
+		modelVisible: skills,
+		safeCatalog: renderCompactCatalog(skills),
+		safeCatalogTokens: 100,
+		catalogTokenBudget: 2048,
+	});
+	assert.equal(inexpensive.strategy, "full-catalog");
+	assert.equal(inexpensive.incomplete, false);
+	assert.equal(inexpensive.describedSkills.length, 6);
+
+	const paginated = discloseAdaptiveCatalog({
+		index,
+		query,
+		modelVisible: skills,
+		safeCatalog: renderCompactCatalog(skills),
+		safeCatalogTokens: 5000,
+		catalogTokenBudget: 200,
+	});
+	assert.equal(paginated.strategy, "full-catalog");
+	assert.equal(paginated.incomplete, false);
+	assert.equal(paginated.describedSkills.length, 6);
+});
+
+test("large-catalog cutoff ambiguity keeps pinned descriptions instead of emptying the catalog", () => {
+	const pinned = skill(
+		"skill-000",
+		"Use this skill for focused workflow 0, validation, and related project tasks.",
+	);
+	const neighbors = Array.from({ length: 40 }, (_, index) =>
+		skill(
+			`skill-${String(index + 1).padStart(3, "0")}`,
+			`Use this skill for focused workflow ${index + 1}, validation, and related project tasks.`,
+		),
+	);
+	const skills = [pinned, ...neighbors];
+	const disclosure = discloseAdaptiveCatalog({
+		index: buildRoutingIndex(skills),
+		query: buildRoutingQuery(
+			"Run workflow-0 with skill-000 and verify its evidence.",
+		),
+		modelVisible: skills,
+		safeCatalog: renderCompactCatalog(skills),
+		safeCatalogTokens: 5000,
+		catalogTokenBudget: 200,
+	});
+	assert.notEqual(disclosure.strategy, "paginated");
+	assert.ok(disclosure.describedSkills.some((item) => item.name === "skill-000"));
+	assert.equal(disclosure.incomplete, true);
 });
 
 test("full fallback renders the approved complete catalog", () => {

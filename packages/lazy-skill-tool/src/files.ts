@@ -22,6 +22,12 @@ function isAbortError(error: unknown): boolean {
 	return error instanceof Error && error.name === "AbortError";
 }
 
+function compareText(left: string, right: string): number {
+	if (left < right) return -1;
+	if (left > right) return 1;
+	return 0;
+}
+
 async function readDirectoryEntries(
 	directory: string,
 	signal: AbortSignal | undefined,
@@ -56,7 +62,7 @@ async function readDirectoryEntries(
 		}
 	}
 
-	entries.sort((a, b) => a.name.localeCompare(b.name));
+	entries.sort((left, right) => compareText(left.name, right.name));
 	return { entries, truncated };
 }
 
@@ -150,6 +156,6 @@ export async function sampleRelatedFiles(
 	}
 
 	if (queue.length > 0) truncated = true;
-	files.sort((a, b) => a.localeCompare(b));
+	files.sort(compareText);
 	return { files, truncated, directoriesVisited: visitedDirectories };
 }

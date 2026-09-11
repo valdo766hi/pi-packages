@@ -1,202 +1,270 @@
-import type { LazySkillConfig, RuntimeSkill } from "./catalog.ts";
 import {
-	escapeXml,
+	formatSkillsForPrompt,
+	type Skill,
+} from "@earendil-works/pi-coding-agent";
+import {
 	renderAdaptiveCatalog,
-	renderCompactCatalog,
+	renderSafeCatalog,
+	ROUTING_MESSAGE_TYPE,
+	type RuntimeSkill,
 } from "./catalog.ts";
-import type { RoutingSelection } from "./routing.ts";
+import type { LazySkillConfig } from "./config.ts";
+import { lazySkillErrorMessage, type LazySkillErrorCode } from "./errors.ts";
+import type { AdaptiveDisclosure, RoutingSelection } from "./routing.ts";
 
-const OPEN_TAG = "<available_skills>";
-const CLOSE_TAG = "</available_skills>";
-const MAX_INSTRUCTION_PARAGRAPH_LENGTH = 800;
+export type NativeSkillReadTool = "read" | "bash";
 
 export interface PromptTransformResult {
 	readonly prompt: string;
 	readonly replaced: boolean;
+	readonly sanitized?: boolean;
+	readonly failure?: "missing" | "multiple";
 	readonly warning?: string;
 }
 
-function trimTrailingWhitespaceEnd(value: string): number {
-	return value.trimEnd().length;
-}
-
-function isSkillInstruction(value: string): boolean {
-	if (value.length === 0 || value.length > MAX_INSTRUCTION_PARAGRAPH_LENGTH)
-		return false;
-	if (value.includes("<") || value.includes(">")) return false;
-
-	const mentionsSkills = /\bskills?\b/iu.test(value);
-	const mentionsLoader =
-		/\b(read|load)\b/iu.test(value) ||
-		/\bskill\b[^\n]{0,40}\btool\b/iu.test(value);
-	return mentionsSkills && mentionsLoader;
-}
-
-interface SkillBlock {
-	readonly openingIndex: number;
-	readonly closingIndex: number;
-}
-
-function findSkillBlocks(prompt: string): SkillBlock[] {
-	const pattern = /<available_skills>[\s\S]*?<\/available_skills>/gu;
-	return [...prompt.matchAll(pattern)].map((match) => {
-		const openingIndex = match.index;
-		const closingIndex = openingIndex + match[0].lastIndexOf(CLOSE_TAG);
-		return { openingIndex, closingIndex };
-	});
-}
-
-function blockMatchesSnapshot(
-	prompt: string,
-	block: SkillBlock,
-	skills: readonly RuntimeSkill[],
-): boolean {
-	const content = prompt.slice(
-		block.openingIndex,
-		block.closingIndex + CLOSE_TAG.length,
-	);
-	const attributeNames = [
-		...content.matchAll(/<skill\b[^>]*\bname="([^"]*)"[^>]*>/gu),
-	].map((match) => match[1] ?? "");
-	const nestedNames = [...content.matchAll(/<name>([^<]*)<\/name>/gu)].map(
-		(match) => match[1] ?? "",
-	);
-	const actualNames = [...attributeNames, ...nestedNames];
-	const expectedNames = skills
-		.map((skill) => escapeXml(skill.name))
-		.toSorted((left, right) => left.localeCompare(right));
-	return (
-		actualNames.length === expectedNames.length &&
-		actualNames
-			.toSorted((left, right) => left.localeCompare(right))
-			.every((name, index) => name === expectedNames[index])
-	);
-}
-
-function selectSkillBlock(
-	prompt: string,
-	skills: readonly RuntimeSkill[],
-): { block?: SkillBlock; warning?: string } {
-	if (skills.length === 0) return {};
-
-	const blocks = findSkillBlocks(prompt);
-	if (blocks.length === 0) {
-		if (prompt.includes(OPEN_TAG)) {
-			return {
-				warning:
-					"Pi's <available_skills> block is incomplete; the native prompt was left unchanged.",
-			};
-		}
-		return {
-			warning:
-				"Pi's <available_skills> block was not found; the native prompt was left unchanged.",
-		};
-	}
-
-	const matchingBlocks = blocks.filter(
-		(block) =>
-			findInstructionStart(prompt, block.openingIndex) !== undefined &&
-			blockMatchesSnapshot(prompt, block, skills),
-	);
-	const block = matchingBlocks.at(-1);
-	if (block) return { block };
-	if (blocks.length === 1) {
-		return {
-			warning:
-				"A skill XML block was found without Pi's skill-loading instruction and current skill entries; the native prompt was left unchanged.",
-		};
-	}
-	return {
-		warning:
-			"Multiple <available_skills> blocks were found without a canonical match; the native prompt was left unchanged.",
-	};
-}
-
-function findInstructionStart(
-	prompt: string,
-	openingIndex: number,
-): number | undefined {
-	const contentEnd = trimTrailingWhitespaceEnd(prompt.slice(0, openingIndex));
-	const separator = prompt.lastIndexOf("\n\n", contentEnd - 1);
-	const candidateStart = separator === -1 ? 0 : separator + 2;
-	const candidate = prompt.slice(candidateStart, contentEnd).trim();
-
-	return isSkillInstruction(candidate) ? candidateStart : undefined;
+interface DescriptionConfig {
+	readonly maxDescriptionCharacters?: number;
+	readonly descriptionMax?: number;
 }
 
 function renderCatalog(
-	snapshotSkills: readonly RuntimeSkill[],
-	config: Pick<LazySkillConfig, "descriptionMax">,
+	skills: readonly RuntimeSkill[],
+	config: DescriptionConfig,
 	selection?: RoutingSelection,
 ): string {
-	if (!selection || selection.fallback) {
-		return renderCompactCatalog(snapshotSkills, config);
-	}
+	if (!selection || selection.fallback) return renderSafeCatalog(skills, config);
 	return renderAdaptiveCatalog(
 		selection.describedSkills,
 		selection.remainingNames,
 		config,
+		selection.remainingNames.length > 0,
 	);
+}
+
+export function renderDisclosureCatalog(
+	disclosure: AdaptiveDisclosure,
+	config: DescriptionConfig,
+): string {
+	if (disclosure.strategy === "full-catalog") {
+		return renderSafeCatalog(disclosure.describedSkills, config);
+	}
+	return renderAdaptiveCatalog(
+		disclosure.describedSkills,
+		disclosure.remainingNames,
+		config,
+		disclosure.incomplete,
+	);
+}
+
+export function routingHintMessage(
+	catalog: string,
+	details: Record<string, unknown>,
+): {
+	customType: string;
+	content: string;
+	display: false;
+	details: Record<string, unknown>;
+} {
+	return {
+		customType: ROUTING_MESSAGE_TYPE,
+		content: catalog,
+		display: false,
+		details,
+	};
+}
+
+export function isRoutingHintMessage(message: {
+	readonly role?: string;
+	readonly customType?: string;
+}): boolean {
+	return message.role === "custom" && message.customType === ROUTING_MESSAGE_TYPE;
+}
+
+export function pruneRoutingHintMessages<T extends { readonly role?: string; readonly customType?: string }>(
+	messages: readonly T[],
+): T[] {
+	let latest = -1;
+	for (let index = 0; index < messages.length; index += 1) {
+		if (isRoutingHintMessage(messages[index] ?? {})) latest = index;
+	}
+	if (latest === -1) return [...messages];
+	return messages.filter((message, index) => {
+		if (!isRoutingHintMessage(message)) return true;
+		return index === latest;
+	});
+}
+
+function occurrenceIndexes(value: string, needle: string): number[] {
+	if (!needle) return [];
+	const indexes: number[] = [];
+	let index = value.indexOf(needle);
+	while (index !== -1) {
+		indexes.push(index);
+		index = value.indexOf(needle, index + needle.length);
+	}
+	return indexes;
+}
+
+interface NativeSectionMatch {
+	readonly index: number;
+	readonly section: string;
+}
+
+function nativeSections(
+	canonicalSkills: readonly Skill[],
+	tools: readonly NativeSkillReadTool[],
+): string[] {
+	return [
+		...new Set(
+			tools
+				.map((tool) => formatSkillsForPrompt([...canonicalSkills], tool))
+				.filter((section) => section.length > 0),
+		),
+	];
+}
+
+function replaceNativeSections(
+	systemPrompt: string,
+	sections: readonly string[],
+	catalog: string,
+	missingIsFailure: boolean,
+): PromptTransformResult {
+	const matches: NativeSectionMatch[] = sections.flatMap((section) =>
+		occurrenceIndexes(systemPrompt, section).map((index) => ({ index, section })),
+	);
+	if (matches.length === 0) {
+		if (!missingIsFailure) {
+			return appendCanonicalSkillCatalog(systemPrompt, catalog);
+		}
+		return {
+			prompt: systemPrompt,
+			replaced: false,
+			failure: "missing",
+			warning:
+				"Pi's exact canonical skill section was not found; prompt integration failed.",
+		};
+	}
+	if (matches.length > 1) {
+		let sanitizedPrompt = systemPrompt;
+		for (const section of sections) {
+			sanitizedPrompt = sanitizedPrompt.split(section).join("");
+		}
+		return {
+			prompt: sanitizedPrompt,
+			replaced: false,
+			sanitized: true,
+			failure: "multiple",
+			warning:
+				"Multiple exact canonical skill sections were found and removed; prompt integration failed.",
+		};
+	}
+	const match = matches[0];
+	if (!match) return { prompt: systemPrompt, replaced: false };
+	const replacement = catalog ? `\n\n${catalog}` : "";
+	return {
+		prompt:
+			systemPrompt.slice(0, match.index) +
+			replacement +
+			systemPrompt.slice(match.index + match.section.length),
+		replaced: true,
+	};
+}
+
+export function replaceCanonicalSkillPrompt(
+	systemPrompt: string,
+	canonicalSkills: readonly Skill[],
+	catalog: string,
+	fileReadTool: NativeSkillReadTool,
+): PromptTransformResult {
+	const sections = nativeSections(canonicalSkills, [fileReadTool]);
+	if (sections.length === 0) {
+		return { prompt: systemPrompt, replaced: false };
+	}
+	return replaceNativeSections(systemPrompt, sections, catalog, true);
+}
+
+export function failClosedHostPrompt(
+	systemPrompt: string,
+	canonicalSkills: readonly Skill[],
+	code: LazySkillErrorCode,
+	fileReadTool?: NativeSkillReadTool,
+): PromptTransformResult {
+	const notice = lazySkillErrorMessage(code);
+	let stripped: PromptTransformResult = {
+		prompt: systemPrompt,
+		replaced: false,
+	};
+	try {
+		const sections = nativeSections(
+			canonicalSkills,
+			fileReadTool ? [fileReadTool] : ["read", "bash"],
+		);
+		if (sections.length > 0) {
+			stripped = replaceNativeSections(systemPrompt, sections, "", true);
+		}
+	} catch {
+		stripped = { prompt: systemPrompt, replaced: false };
+	}
+	const prompt = stripped.prompt.includes(notice)
+		? stripped.prompt
+		: `${stripped.prompt.trimEnd()}\n\n${notice}`;
+	return {
+		...stripped,
+		prompt,
+		replaced: true,
+	};
+}
+
+export function appendCanonicalSkillCatalog(
+	systemPrompt: string,
+	catalog: string,
+): PromptTransformResult {
+	if (!catalog || systemPrompt.includes(catalog)) {
+		return { prompt: systemPrompt, replaced: false };
+	}
+	return {
+		prompt: `${systemPrompt.trimEnd()}\n\n${catalog}`,
+		replaced: true,
+	};
+}
+
+export function replaceOrAppendCanonicalSkillCatalog(
+	systemPrompt: string,
+	canonicalSkills: readonly Skill[],
+	catalog: string,
+): PromptTransformResult {
+	const sections = nativeSections(canonicalSkills, ["read", "bash"]);
+	return replaceNativeSections(systemPrompt, sections, catalog, false);
 }
 
 export function transformSkillPrompt(
 	systemPrompt: string,
 	skills: readonly RuntimeSkill[],
-	config: Pick<LazySkillConfig, "descriptionMax">,
+	config: DescriptionConfig,
 	selection?: RoutingSelection,
+	fileReadTool: NativeSkillReadTool = "read",
 ): PromptTransformResult {
-	const selected = selectSkillBlock(systemPrompt, skills);
-	if (!selected.block) {
-		return {
-			prompt: systemPrompt,
-			replaced: false,
-			warning: selected.warning,
-		};
-	}
-
-	const { openingIndex, closingIndex } = selected.block;
-	const instructionStart = findInstructionStart(systemPrompt, openingIndex);
-	const replacementStart = instructionStart ?? openingIndex;
-	const replacementEnd = closingIndex + CLOSE_TAG.length;
-	const prefix = systemPrompt.slice(0, replacementStart);
-	const suffix = systemPrompt.slice(replacementEnd);
-	const catalog = renderCatalog(skills, config, selection);
-
-	return {
-		prompt: `${prefix}${catalog}${suffix}`,
-		replaced: true,
-		warning:
-			instructionStart === undefined
-				? "Pi's skill-loading instruction was not recognized; the native surrounding text was preserved."
-				: undefined,
-	};
+	return replaceCanonicalSkillPrompt(
+		systemPrompt,
+		skills as readonly Skill[],
+		renderCatalog(skills, config, selection),
+		fileReadTool,
+	);
 }
 
 export function appendSkillCatalog(
 	systemPrompt: string,
 	skills: readonly RuntimeSkill[],
-	config: Pick<LazySkillConfig, "descriptionMax">,
+	config: DescriptionConfig,
 	selection?: RoutingSelection,
 ): PromptTransformResult {
-	if (skills.length === 0) {
-		return { prompt: systemPrompt, replaced: false };
-	}
-
-	const transformed = transformSkillPrompt(
+	return appendCanonicalSkillCatalog(
 		systemPrompt,
-		skills,
-		config,
-		selection,
+		renderCatalog(skills, config, selection),
 	);
-	if (transformed.replaced) return transformed;
-
-	const compactCatalog = renderCatalog(skills, config, selection);
-	if (systemPrompt.includes(compactCatalog)) {
-		return { prompt: systemPrompt, replaced: false };
-	}
-
-	return {
-		prompt: `${systemPrompt.trimEnd()}\n\n${compactCatalog}`,
-		replaced: true,
-	};
 }
+
+export type PromptCatalogConfig = Pick<
+	LazySkillConfig,
+	"maxDescriptionCharacters"
+>;

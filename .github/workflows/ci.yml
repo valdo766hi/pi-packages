@@ -1,8 +1,9 @@
 name: CI
 
 on:
+  # Branch pushes only; release tags are validated by the Publish workflow.
   push:
-    tags-ignore:
+    branches:
       - "**"
   pull_request:
 

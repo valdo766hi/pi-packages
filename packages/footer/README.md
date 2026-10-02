@@ -1,8 +1,12 @@
 # Pi footer
 
-A custom Pi footer with the current directory, Git branch, session name,
-provider/model, thinking level, context usage bar, token/cache statistics, and
-cost.
+A calm two-line Pi footer: where you are and what is thinking, then how full the
+context is, what the session used, and which modes are on.
+
+```text
+nix · ⎇ main                                        gpt-6-luna ● max
+━━━━━━━━━╸──────────│──  42%  108k/258k      ↑1.2M ↓84k  ◎ 91%  ⚡ fast  ⚠ yolo
+```
 
 Install it with:
 
@@ -12,4 +16,17 @@ pi install npm:@valdo766hi/pi-footer
 
 [View this package on npm](https://www.npmjs.com/package/@valdo766hi/pi-footer)
 
-Use `/footer` to toggle the custom footer and restore Pi's built-in footer.
+- **Line 1:** project folder, Git branch, session name, then the model and its
+  thinking level.
+- **Line 2:** context bar and percentage (green, yellow above 70%, red above
+  90%), with `│` marking where auto-compaction starts; then session input and
+  output tokens, last-turn cache hit rate, cost when it is above zero, and status
+  chips from other extensions.
+- `FAST` and `YOLO` statuses appear as chips only while on; any `…: OFF` status is
+  hidden. Other extension statuses follow, unchanged.
+- Narrow terminals drop detail in this order: cost, cache, tokens, chip labels,
+  then the bar. The footer never grows past two lines.
+
+Colors come from the active Pi theme. The footer needs no Nerd Font.
+
+Use `/footer` to toggle between this footer and Pi's built-in one.

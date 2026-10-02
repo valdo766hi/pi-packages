@@ -7,7 +7,7 @@ Small public Pi extensions published under the `@valdo766hi` npm scope.
 | Package | Purpose | Install |
 | --- | --- | --- |
 | [`@valdo766hi/pi-fast`](packages/fast) | Toggle OpenAI priority requests with `/fast` | `pi install npm:@valdo766hi/pi-fast` |
-| [`@valdo766hi/pi-footer`](packages/footer) | Show context, token, cache, cost, and model details | `pi install npm:@valdo766hi/pi-footer` |
+| [`@valdo766hi/pi-footer`](packages/footer) | Calm two-line footer for context, usage, model, and active modes | `pi install npm:@valdo766hi/pi-footer` |
 | [`@valdo766hi/pi-yolo`](packages/yolo) | Toggle native permission-system YOLO mode with `/yolo` | `pi install npm:@valdo766hi/pi-yolo` |
 | [`@valdo766hi/pi-lazy-skill-tool`](packages/lazy-skill-tool) | Replace Pi's verbose skill catalog with lazy exact-name loading | `pi install npm:@valdo766hi/pi-lazy-skill-tool` |
 

@@ -1,7 +1,7 @@
 {
   "name": "@valdo766hi/pi-footer",
-  "version": "0.1.0",
-  "description": "Pi extension with a context and token-usage footer",
+  "version": "0.2.0",
+  "description": "Pi extension with a calm two-line context and usage footer",
   "type": "module",
   "license": "Apache-2.0",
   "author": "valdo766hi",

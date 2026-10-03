@@ -6,7 +6,40 @@ name: CI
   push:
     branches:
       - "**"
+    # Markdown fixtures are test inputs, not documentation.
+    paths:
+      - "packages/**/*.ts"
+      - "packages/**/package.json"
+      - "packages/**/schema/**"
+      - "scripts/**/*.mjs"
+      - "test/**/*.ts"
+      - "test/fixtures/**"
+      - "package*.json"
+      - "tsconfig*.json"
+      - "*.nix"
+      - "*.lock"
+      - "devenv.yaml"
+      - ".envrc"
+      - ".npmrc"
+      - ".github/workflows/*.yml"
+      - ".github/workflows/*.yaml"
   pull_request:
+    paths:
+      - "packages/**/*.ts"
+      - "packages/**/package.json"
+      - "packages/**/schema/**"
+      - "scripts/**/*.mjs"
+      - "test/**/*.ts"
+      - "test/fixtures/**"
+      - "package*.json"
+      - "tsconfig*.json"
+      - "*.nix"
+      - "*.lock"
+      - "devenv.yaml"
+      - ".envrc"
+      - ".npmrc"
+      - ".github/workflows/*.yml"
+      - ".github/workflows/*.yaml"
 
 permissions:
   contents: read

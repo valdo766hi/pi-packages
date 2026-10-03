@@ -418,7 +418,7 @@ async function prepareSkillPrompt({
 
 	const activeTools = pi.getActiveTools();
 	const readTool = nativeReadTool(activeTools);
-	const restrictive = !snapshot.policy.valid || snapshot.policy.restrictive;
+	const restrictive = snapshot.policy.restrictive;
 	if (state.ownership.status === "foreign") {
 		warnOnce(
 			state,
@@ -473,7 +473,7 @@ async function prepareSkillPrompt({
 			snapshot,
 			result,
 			true,
-			snapshot.policy.valid ? "SKILL_PROMPT_INTEGRATION_FAILED" : "POLICY_INVALID",
+			"SKILL_PROMPT_INTEGRATION_FAILED",
 			event,
 			ctx,
 			readTool,
@@ -512,7 +512,7 @@ async function prepareSkillPrompt({
 				catalog,
 			),
 			restrictive,
-			snapshot.policy.valid ? "SKILL_PROMPT_INTEGRATION_FAILED" : "POLICY_INVALID",
+			"SKILL_PROMPT_INTEGRATION_FAILED",
 			event,
 			ctx,
 			readTool,
@@ -529,7 +529,7 @@ async function prepareSkillPrompt({
 			readTool,
 		),
 		restrictive,
-		snapshot.policy.valid ? "SKILL_PROMPT_INTEGRATION_FAILED" : "POLICY_INVALID",
+		"SKILL_PROMPT_INTEGRATION_FAILED",
 		event,
 		ctx,
 		readTool,
@@ -573,6 +573,7 @@ export default function lazySkillTool(pi: ExtensionAPI): void {
 				state.authorization,
 				ownership,
 			);
+			assertLiveSkillAccess(publishedSnapshot(state), snapshot, params.name, true);
 			const loaded = await loadSkill(
 				skill,
 				snapshot.config.resourceFileSampleLimit,

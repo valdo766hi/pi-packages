@@ -7,7 +7,7 @@ import {
 	loadSkillsFromDir,
 	parseFrontmatter,
 	truncateHead,
-} from "../packages/lazy-skill-tool/node_modules/@earendil-works/pi-coding-agent/dist/index.js";
+} from "@earendil-works/pi-coding-agent";
 import lazySkillTool from "../packages/lazy-skill-tool/src/index.ts";
 import {
 	normalizeDescription,
@@ -358,17 +358,17 @@ const scaleRows = SCALE_COUNTS.map((count) => {
 	if (safeTokens <= DEFAULT_CATALOG_TOKEN_BUDGET) {
 		if (adaptive.disclosure.strategy !== "full-catalog") {
 			throw new Error(
-				`v0.3.0 adaptive should expose the inexpensive catalog at ${count} skills.`,
+				`current adaptive should expose the inexpensive catalog at ${count} skills.`,
 			);
 		}
 		if (adaptive.catalog !== safe) {
 			throw new Error(
-				`v0.3.0 inexpensive adaptive catalog diverged from safe at ${count} skills.`,
+				`current inexpensive adaptive catalog diverged from safe at ${count} skills.`,
 			);
 		}
 	} else if (tokens(adaptive.catalog) >= safeTokens) {
 		throw new Error(
-			`v0.3.0 adaptive catalog was not smaller than safe at ${count} skills.`,
+			`current adaptive catalog was not smaller than safe at ${count} skills.`,
 		);
 	}
 	const adaptivePrompt = [STABLE_ADAPTIVE_INSTRUCTIONS, adaptive.catalog]
@@ -409,18 +409,18 @@ if (skillOnlyBreakEven > 5) {
 	);
 }
 if (breakEven === undefined) {
-	throw new Error("v0.3.0 safe total context never reached stock Pi break-even.");
+	throw new Error("current safe total context never reached stock Pi break-even.");
 }
 if (breakEven > 10) {
 	throw new Error(
-		`v0.3.0 safe total break-even was ${breakEven}, above the target of ten skills with skill_search.`,
+		`current safe total break-even was ${breakEven}, above the target of ten skills with skill_search.`,
 	);
 }
 for (const row of scaleRows) {
 	if (row.strategy === "full-catalog") continue;
 	if (row.adaptiveTotal.tokens >= row.safeTotal.tokens) {
 		throw new Error(
-			`v0.3.0 adaptive total was not below safe at ${row.count} skills.`,
+			`current adaptive total was not below safe at ${row.count} skills.`,
 		);
 	}
 }
@@ -481,7 +481,7 @@ const config = readConfig({}).config;
 const policy = compileSkillPolicy();
 const startupSkills = syntheticSkills(100);
 const safeStartup = await measure(() =>
-	buildSkillSnapshot(startupSkills, config, policy),
+	buildSkillSnapshot(startupSkills, { ...config, routing: "safe" }, policy),
 );
 const adaptiveStartup = await measure(() =>
 	buildSkillSnapshot(startupSkills, { ...config, routing: "adaptive" }, policy),
@@ -530,13 +530,13 @@ for (const skill of [selectedSkill, ...realWorldSkills.slice(0, 1)]) {
 
 const fixedRows = [
 	["v0.1.6 tool schema", TOOL_016_SCHEMA],
-	["v0.3.0 skill schema", TOOL_020_SCHEMA],
-	["v0.3.0 skill snippet", TOOL_020_SNIPPET],
-	["v0.3.0 skill guideline", TOOL_020_GUIDELINE],
-	["v0.3.0 search schema", TOOL_030_SEARCH_SCHEMA],
-	["v0.3.0 search snippet", TOOL_030_SEARCH_SNIPPET],
-	["v0.3.0 search guideline", TOOL_030_SEARCH_GUIDELINE],
-	["v0.3.0 stable adaptive", STABLE_ADAPTIVE_INSTRUCTIONS],
+	["current skill schema", TOOL_020_SCHEMA],
+	["current skill snippet", TOOL_020_SNIPPET],
+	["current skill guideline", TOOL_020_GUIDELINE],
+	["current search schema", TOOL_030_SEARCH_SCHEMA],
+	["current search snippet", TOOL_030_SEARCH_SNIPPET],
+	["current search guideline", TOOL_030_SEARCH_GUIDELINE],
+	["current stable adaptive", STABLE_ADAPTIVE_INSTRUCTIONS],
 ];
 const lines = [
 	"Lazy skill context benchmark (Pi estimateTokens; component token estimates are summed)",
@@ -546,26 +546,26 @@ const lines = [
 		const measured = metric(value);
 		return `  ${label.padEnd(24)} ${String(measured.bytes).padStart(5)} B  ${String(measured.tokens).padStart(4)} tok`;
 	}),
-	`  ${"v0.3.0 fixed total".padEnd(24)} ${String(bytes(FIXED_030)).padStart(5)} B  ${String(tokens(FIXED_030)).padStart(4)} tok`,
+	`  ${"current fixed total".padEnd(24)} ${String(bytes(FIXED_030)).padStart(5)} B  ${String(tokens(FIXED_030)).padStart(4)} tok`,
 	"",
 	"Catalog / total context by representative corpus:",
-	"  count | stock Pi | OpenCode verbose | 0.1.6 full | 0.1.6 adaptive | 0.3.0 safe | 0.3.0 adaptive",
+	"  count | stock Pi | OpenCode verbose | 0.1.6 full | 0.1.6 adaptive | current safe | current adaptive",
 	...scaleRows.map(
 		(row) =>
 			`  ${String(row.count).padStart(5)} | ${String(row.stock.tokens).padStart(5)} tok | ${String(row.openCode.tokens).padStart(5)} tok | ${String(row.oldFull.tokens).padStart(5)}/${String(row.oldFullTotal.tokens).padStart(5)} | ${String(row.oldAdaptive.tokens).padStart(5)}/${String(row.oldAdaptiveTotal.tokens).padStart(5)} | ${String(row.safe.tokens).padStart(5)}/${String(row.safeTotal.tokens).padStart(5)} | ${String(row.adaptive.tokens).padStart(5)}/${String(row.adaptiveTotal.tokens).padStart(5)} (${row.strategy}, ${row.selected} described)`,
 	),
 	"  Version columns are catalog/total tokens; stock and OpenCode have no lazy-tool fixed cost.",
 	`  Safe skill-only total (without skill_search) first beats stock Pi at ${skillOnlyBreakEven} representative skill(s).`,
-	`  v0.3.0 safe total including skill_search first beats stock Pi at ${breakEven} representative skill(s).`,
+	`  current safe total including skill_search first beats stock Pi at ${breakEven} representative skill(s).`,
 	"  Adaptive totals include stable system instructions, the task-local catalog, and both tool schemas.",
 	"",
 	"Exact serialized catalog characters / UTF-8 bytes:",
 	...scaleRows.map(
 		(row) =>
-			`  ${String(row.count).padStart(5)} skills  stock ${String(row.stock.characters).padStart(6)}/${String(row.stock.bytes).padStart(6)}  OpenCode ${String(row.openCode.characters).padStart(6)}/${String(row.openCode.bytes).padStart(6)}  0.1.6-full ${String(row.oldFull.characters).padStart(6)}/${String(row.oldFull.bytes).padStart(6)}  0.1.6-adaptive ${String(row.oldAdaptive.characters).padStart(6)}/${String(row.oldAdaptive.bytes).padStart(6)}  0.3.0-safe ${String(row.safe.characters).padStart(6)}/${String(row.safe.bytes).padStart(6)}  0.3.0-adaptive ${String(row.adaptive.characters).padStart(6)}/${String(row.adaptive.bytes).padStart(6)}`,
+			`  ${String(row.count).padStart(5)} skills  stock ${String(row.stock.characters).padStart(6)}/${String(row.stock.bytes).padStart(6)}  OpenCode ${String(row.openCode.characters).padStart(6)}/${String(row.openCode.bytes).padStart(6)}  0.1.6-full ${String(row.oldFull.characters).padStart(6)}/${String(row.oldFull.bytes).padStart(6)}  0.1.6-adaptive ${String(row.oldAdaptive.characters).padStart(6)}/${String(row.oldAdaptive.bytes).padStart(6)}  current-safe ${String(row.safe.characters).padStart(6)}/${String(row.safe.bytes).padStart(6)}  current-adaptive ${String(row.adaptive.characters).padStart(6)}/${String(row.adaptive.bytes).padStart(6)}`,
 	),
 	"",
-	"v0.3.0 safe catalog reduction versus stock Pi:",
+	"current safe catalog reduction versus stock Pi:",
 	...scaleRows.map(
 		(row) =>
 			`  ${String(row.count).padStart(5)} skills  characters ${reduction(row.safe.characters, row.stock.characters).padStart(5)}%  bytes ${reduction(row.safe.bytes, row.stock.bytes).padStart(5)}%  tokens ${reduction(row.safe.tokens, row.stock.tokens).padStart(5)}%`,
@@ -574,7 +574,7 @@ const lines = [
 	"Loaded model-facing payload (frontmatter and redundant metadata removal):",
 	...payloadRows.map(
 		(row) =>
-			`  ${row.name}: 0.1.6 ${row.old.characters} chars/${row.old.bytes} B/${row.old.tokens} tok -> 0.3.0 ${row.current.characters} chars/${row.current.bytes} B/${row.current.tokens} tok`,
+			`  ${row.name}: 0.1.6 ${row.old.characters} chars/${row.old.bytes} B/${row.old.tokens} tok -> current ${row.current.characters} chars/${row.current.bytes} B/${row.current.tokens} tok`,
 	),
 	"",
 	`Warm timings (${MEASURED_ITERATIONS} iterations, milliseconds; machine-specific):`,
@@ -582,7 +582,7 @@ const lines = [
 	`  adaptive snapshot (100) p50 ${adaptiveStartup.p50}  p95 ${adaptiveStartup.p95}`,
 	`  adaptive route (100)    p50 ${adaptiveRouting.p50}  p95 ${adaptiveRouting.p95}`,
 	`  frozen v0.1.6 load     p50 ${lazy016Invocation.p50}  p95 ${lazy016Invocation.p95}`,
-	`  v0.3.0 lazy invocation  p50 ${lazyInvocation.p50}  p95 ${lazyInvocation.p95}`,
+	`  current lazy invocation  p50 ${lazyInvocation.p50}  p95 ${lazyInvocation.p95}`,
 	"",
 	"Gates: safe catalog beats stock, verbose, and frozen v0.1.6 full catalogs at every count; inexpensive catalogs expand to safe; large-catalog adaptive totals stay below safe; loaded payloads do not exceed frozen v0.1.6 counterparts.",
 	"Catalog visibility safety is structural. This benchmark does not measure live-model skill-selection accuracy or provider billing.",

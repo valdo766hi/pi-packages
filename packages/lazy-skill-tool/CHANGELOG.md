@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.1
+
+### Fixed
+
+- Keep exact-name pins when a multi-intent prompt contains a short clause or the name precedes prompt truncation.
+- Preserve the query during cursor-only search continuation; malformed cursor JSON now returns the typed stale-cursor error.
+- Invalidate captured authorization when the live policy fingerprint changes, checking both before file reads and before returning instructions.
+
+### Changed
+
+- Support and validate Pi 1.0.0 alongside 0.85.1 without changing routing defaults or output contracts.
+- Remove redundant catalog and policy branches.
+- Apply lint cleanup without changing rendered output or routing results.
+- Make the benchmark use the installed public Pi entrypoint and measure an explicitly safe startup; include benchmark gates in repository checks.
+
 ## 0.3.0
 
 ### Changed

@@ -42,8 +42,12 @@ following hold:
 
 Everything else — other providers, OpenAI-compatible third parties such as
 `groq` or `openrouter`, Azure, and any explicitly set tier — is left unchanged.
-For Codex, the extension also applies Pi's priority multiplier to reported costs,
-because Codex reports the response tier as `default`.
+For Codex, costs are recalculated from the active model's base prices and given
+Pi's priority multiplier exactly once, whether the response reports `default`
+or `priority`. Responses are not charged twice when Pi already adjusted them.
+
+Validated with Pi 0.85.1 and 1.0.0 on Node.js 22.19+; Pi supplies the coding-agent
+and AI peers. See [CHANGELOG.md](./CHANGELOG.md) for release notes.
 
 ## Tests
 

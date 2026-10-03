@@ -1,13 +1,14 @@
 {
   "name": "@valdo766hi/pi-footer",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Pi extension with a calm two-line context and usage footer",
   "type": "module",
   "license": "Apache-2.0",
   "author": "valdo766hi",
   "repository": {
     "type": "git",
-    "url": "https://github.com/valdo766hi/pi-packages"
+    "url": "https://github.com/valdo766hi/pi-packages",
+    "directory": "packages/footer"
   },
   "keywords": [
     "pi-package",
@@ -16,8 +17,12 @@
   "files": [
     "footer.ts",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "publishConfig": {
     "access": "public"
   },
@@ -27,7 +32,8 @@
     ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*"
+    "@earendil-works/pi-ai": ">=0.85.1 <0.86.0 || >=1.0.0 <1.1.0",
+    "@earendil-works/pi-coding-agent": ">=0.85.1 <0.86.0 || >=1.0.0 <1.1.0",
+    "@earendil-works/pi-tui": ">=0.85.1 <0.86.0 || >=1.0.0 <1.1.0"
   }
 }

@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { test } from "node:test";
 
 const REPOSITORY_URL = "https://github.com/valdo766hi/pi-packages";
+const WORKSPACES = readdirSync("packages", { withFileTypes: true })
+	.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
 
 function resolveRelease(tag: string) {
 	return JSON.parse(
@@ -14,7 +16,7 @@ function resolveRelease(tag: string) {
 }
 
 test("published packages declare the provenance repository", () => {
-	for (const workspace of ["fast", "footer", "yolo", "lazy-skill-tool"]) {
+	for (const workspace of WORKSPACES) {
 		const manifest = JSON.parse(
 			readFileSync(`packages/${workspace}/package.json`, "utf8"),
 		);
@@ -22,31 +24,16 @@ test("published packages declare the provenance repository", () => {
 	}
 });
 
-test("release tags resolve to the matching package version", () => {
-	assert.deepEqual(resolveRelease("pi-fast-0.1.2"), {
-		packageName: "@valdo766hi/pi-fast",
-		version: "0.1.2",
-		workspace: "packages/fast",
-	});
-	const lazyManifest = JSON.parse(
-		readFileSync("packages/lazy-skill-tool/package.json", "utf8"),
-	);
-	assert.deepEqual(
-		resolveRelease(`pi-lazy-skill-tool-${lazyManifest.version}`),
-		{
-			packageName: "@valdo766hi/pi-lazy-skill-tool",
-			version: lazyManifest.version,
-			workspace: "packages/lazy-skill-tool",
-		},
-	);
-	const yoloManifest = JSON.parse(
-		readFileSync("packages/yolo/package.json", "utf8"),
-	);
-	assert.deepEqual(resolveRelease(`pi-yolo-${yoloManifest.version}`), {
-		packageName: "@valdo766hi/pi-yolo",
-		version: yoloManifest.version,
-		workspace: "packages/yolo",
-	});
+test("release tags resolve to each workspace's current version", () => {
+	for (const workspace of WORKSPACES) {
+		const manifest = JSON.parse(readFileSync(`packages/${workspace}/package.json`, "utf8"));
+		const tag = `${manifest.name.split("/").at(-1)}-${manifest.version}`;
+		assert.deepEqual(resolveRelease(tag), {
+			packageName: manifest.name,
+			version: manifest.version,
+			workspace: `packages/${workspace}`,
+		});
+	}
 });
 
 test("release tag resolution rejects unknown and malformed tags", () => {

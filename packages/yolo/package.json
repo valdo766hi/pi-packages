@@ -1,13 +1,14 @@
 {
   "name": "@valdo766hi/pi-yolo",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Pi extension providing a session-local permission approval overlay",
   "type": "module",
   "license": "Apache-2.0",
   "author": "valdo766hi",
   "repository": {
     "type": "git",
-    "url": "https://github.com/valdo766hi/pi-packages"
+    "url": "https://github.com/valdo766hi/pi-packages",
+    "directory": "packages/yolo"
   },
   "keywords": [
     "pi-package",
@@ -16,8 +17,12 @@
   "files": [
     "yolo.ts",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "publishConfig": {
     "access": "public"
   },
@@ -27,8 +32,8 @@
     ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.84.2 <0.86.0",
-    "@gotgenes/pi-permission-system": ">=25.1.0 <33.0.0"
+    "@earendil-works/pi-coding-agent": ">=0.84.2 <0.86.0 || >=1.0.0 <1.1.0",
+    "@gotgenes/pi-permission-system": ">=25.1.0 <33.0.0 || >=39.0.2 <40.0.0"
   },
   "peerDependenciesMeta": {
     "@gotgenes/pi-permission-system": {

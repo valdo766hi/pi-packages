@@ -279,10 +279,12 @@ export function assertLiveSkillAccess(
 	name: string,
 	modelInvocation: boolean,
 ): RuntimeSkill {
-	if (!live) throw new LazySkillError("POLICY_INVALID");
-	if (!live.policy.valid) throw new LazySkillError("POLICY_INVALID");
+	if (!live?.policy.valid) throw new LazySkillError("POLICY_INVALID");
 	if (live.policy.decision(name) === "deny") {
 		throw new LazySkillError("SKILL_DENIED", { requestedName: name });
+	}
+	if (live.policy.fingerprint !== captured.policy.fingerprint) {
+		throw new LazySkillError("SKILL_APPROVAL_REQUIRED", { requestedName: name });
 	}
 	return policySkill(captured, name, modelInvocation);
 }

@@ -8,7 +8,7 @@ Small public Pi extensions published under the `@valdo766hi` npm scope.
 | --- | --- | --- |
 | [`@valdo766hi/pi-fast`](packages/fast) | Toggle OpenAI priority requests with `/fast` | `pi install npm:@valdo766hi/pi-fast` |
 | [`@valdo766hi/pi-footer`](packages/footer) | Calm two-line footer for context, usage, model, and active modes | `pi install npm:@valdo766hi/pi-footer` |
-| [`@valdo766hi/pi-yolo`](packages/yolo) | Toggle native permission-system YOLO mode with `/yolo` | `pi install npm:@valdo766hi/pi-yolo` |
+| [`@valdo766hi/pi-yolo`](packages/yolo) | Session-local permission approval overlay with `/yolo` | `pi install npm:@valdo766hi/pi-yolo` |
 | [`@valdo766hi/pi-lazy-skill-tool`](packages/lazy-skill-tool) | Replace Pi's verbose skill catalog with lazy exact-name loading | `pi install npm:@valdo766hi/pi-lazy-skill-tool` |
 
 ## Development
@@ -16,14 +16,25 @@ Small public Pi extensions published under the `@valdo766hi` npm scope.
 Use Node.js 24 or newer.
 
 ```sh
-npm ci
+npm ci --ignore-scripts
 npm run check
-npm run benchmark:lazy-skills
 ```
 
-`npm run check` runs the test suite and verifies every workspace tarball. Keep
-package source, tests, documentation, and package metadata together under
-`packages/<name>`.
+`npm run check` type-checks source, discovers all tests, runs lazy-skill benchmark
+gates, and verifies every workspace tarball. Keep source, tests, changelogs,
+documentation, and metadata together under `packages/<name>`.
+
+Development uses Pi 1.0.0 and TypeBox 1.3.34. Compatibility checks cover Pi
+0.85.1 / permission-system 32.1.0 and Pi 1.0.0 / permission-system 39.0.2 on
+Node.js 22.19 and 24. Permission-system is a development-only UI contract fixture;
+consumers install it separately if using YOLO.
+
+**Dependency advisory:** Pi 1.0.0's published shrinkwrap installs
+`brace-expansion@5.0.9`, which has a high-severity DoS advisory (fixed in 5.0.12).
+`npm audit fix` and overrides do not replace that shrinkwrapped dependency here.
+These extensions do not bundle it, but their Pi host does; recheck `npm audit`
+and the installed dependency version before publishing. No security fix is
+claimed until upstream updates its package.
 
 ## Releases
 
@@ -37,13 +48,24 @@ pi-yolo-x.x.x
 pi-lazy-skill-tool-x.x.x
 ```
 
-For a new release, update one workspace, validate it, then push its matching
-tag:
+Prepared patch versions (not yet published):
+
+| Workspace | Version | Release tag |
+| --- | --- | --- |
+| `fast` | `0.1.3` | `pi-fast-0.1.3` |
+| `footer` | `0.2.1` | `pi-footer-0.2.1` |
+| `yolo` | `0.1.7` | `pi-yolo-0.1.7` |
+| `lazy-skill-tool` | `0.3.1` | `pi-lazy-skill-tool-0.3.1` |
+
+For subsequent releases, bump the chosen workspace with
+`npm version --workspace=packages/<name> --no-git-tag-version <next-version>`
+and add its changelog entry. Commit the reviewed changes before tagging. For
+the prepared lazy-skill release, validate and push its matching tag:
 
 ```sh
-npm version --workspace=packages/lazy-skill-tool --no-git-tag-version 0.3.0
 npm run check
-git tag -a pi-lazy-skill-tool-0.3.0 -m "release: pi-lazy-skill-tool 0.3.0"
+node scripts/resolve-release.mjs pi-lazy-skill-tool-0.3.1
+git tag -a pi-lazy-skill-tool-0.3.1 -m "release: pi-lazy-skill-tool 0.3.1"
 git push origin main --follow-tags
 ```
 

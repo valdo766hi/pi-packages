@@ -1,6 +1,7 @@
+---
 name: CI
 
-on:
+"on":
   # Branch pushes only; release tags are validated by the Publish workflow.
   push:
     branches:
@@ -14,14 +15,51 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
         with:
           persist-credentials: false
-      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
-      - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1 # v16
+      # v31
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24
+      # v16
+      - uses: cachix/cachix-action@3ba601ff5bbb07c7220846facfa2cd81eeee15a1
         with:
           name: devenv
       - name: Install devenv
         run: nix profile add nixpkgs#devenv
       - name: Run devenv checks
         run: devenv test
+
+  compatibility:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22.19.0", "24"]
+        host:
+          - pi: "0.85.1"
+            permissions: "32.1.0"
+          - pi: "1.0.0"
+            permissions: "39.0.2"
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38  # v6
+        with:
+          node-version: ${{ matrix.node }}
+          package-manager-cache: false
+      - name: Select host versions
+        env:
+          PI_VERSION: ${{ matrix.host.pi }}
+          PERMISSIONS_VERSION: ${{ matrix.host.permissions }}
+        run: |
+          npm pkg set "devDependencies.@earendil-works/pi-ai=$PI_VERSION" \
+            "devDependencies.@earendil-works/pi-coding-agent=$PI_VERSION" \
+            "devDependencies.@earendil-works/pi-tui=$PI_VERSION" \
+            "devDependencies.@gotgenes/pi-permission-system=$PERMISSIONS_VERSION"
+          npm pkg set --workspace=packages/lazy-skill-tool \
+            "devDependencies.@earendil-works/pi-coding-agent=$PI_VERSION"
+      - name: Install selected dependencies
+        run: npm install --ignore-scripts
+      - name: Check compatibility
+        run: npm run check

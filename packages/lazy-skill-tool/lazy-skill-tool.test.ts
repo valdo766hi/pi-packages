@@ -928,6 +928,32 @@ test("tool invocation captures one immutable snapshot across a registry reload",
 	);
 });
 
+test("a policy reload during async approval cannot disclose captured skill instructions", async () => {
+	const alpha = makeSkill("alpha", "Alpha description");
+	const harness = await createHarness({ skills: [alpha] });
+	const policyDir = join(harness.ctx.cwd, ".pi");
+	const policyPath = join(policyDir, "lazy-skill.json");
+	await mkdir(policyDir, { recursive: true });
+	await writeFile(policyPath, '{"permission":{"skill":"ask"}}');
+	await harness.sessionStart();
+	await harness.before();
+	const shown = Promise.withResolvers<void>();
+	const answer = Promise.withResolvers<string>();
+	harness.ctx.ui.select = () => {
+		shown.resolve();
+		return answer.promise;
+	};
+	const pending = harness.tool.execute(
+		"policy-reload", { name: "alpha" }, undefined, undefined, harness.ctx,
+	);
+	await shown.promise;
+	await writeFile(policyPath, '{"permission":{"skill":"deny"}}');
+	await harness.sessionStart();
+	await harness.before();
+	answer.resolve("Allow once");
+	await assert.rejects(pending, assertCode("SKILL_DENIED"));
+});
+
 test("a failed snapshot rebuild blocks new skill operations", async () => {
 	const alpha = makeSkill("alpha", "Alpha description");
 	const harness = await createHarness({ skills: [alpha] });

@@ -19,8 +19,8 @@ pi install npm:@valdo766hi/pi-footer
 - **Line 1:** project folder, Git branch, session name, then the model and its
   thinking level.
 - **Line 2:** context bar and percentage (green, yellow above 70%, red above
-  90%), with `│` marking where auto-compaction starts; then session input and
-  output tokens, last-turn cache hit rate, cost when it is above zero, and status
+  90%), with `│` marking the configured auto-compaction threshold; then session
+  input and output tokens, last-turn cache hit rate, cost above zero, and status
   chips from other extensions.
 - `FAST` and `YOLO` statuses appear as chips only while on; any `…: OFF` status is
   hidden. Other extension statuses follow, unchanged.
@@ -30,3 +30,11 @@ pi install npm:@valdo766hi/pi-footer
 Colors come from the active Pi theme. The footer needs no Nerd Font.
 
 Use `/footer` to toggle between this footer and Pi's built-in one.
+
+The marker uses global and trusted-project compaction settings, including
+model overrides when supported by Pi. Settings refresh at installation and
+before each turn, without writes. Disabled compaction or unreadable settings
+hide the marker. Project labels support POSIX, Windows drive, and UNC paths.
+
+Validated with Pi 0.85.1 and 1.0.0 on Node.js 22.19+.
+See [CHANGELOG.md](./CHANGELOG.md) for release notes.

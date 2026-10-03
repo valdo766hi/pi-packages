@@ -1,7 +1,9 @@
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 
-const packages = ["fast", "footer", "lazy-skill-tool", "yolo"];
+const packages = (await readdir(resolve("packages"), { withFileTypes: true }))
+	.filter((entry) => entry.isDirectory())
+	.map((entry) => entry.name);
 const tag = process.argv[2] ?? process.env.GITHUB_REF_NAME;
 
 if (!tag) {

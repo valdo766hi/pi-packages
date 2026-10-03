@@ -3,6 +3,8 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import fastExtension from "./fast.ts";
 
 const OPENAI = {
@@ -14,6 +16,12 @@ const CODEX = {
 	id: "gpt-5.6-sol",
 	provider: "openai-codex",
 	api: "openai-codex-responses",
+	name: "Test Codex",
+	reasoning: false,
+	input: ["text"],
+	cost: { input: 1, output: 1, cacheRead: 1, cacheWrite: 1 },
+	contextWindow: 100_000,
+	maxTokens: 1000,
 };
 
 function setup(options: { fastFromEnv?: boolean } = {}) {
@@ -70,13 +78,17 @@ function setup(options: { fastFromEnv?: boolean } = {}) {
 				ctx,
 			);
 		},
+		finishMessage: (message: unknown) => handlers.get("message_end")!({ type: "message_end", message }, ctx),
 		message: (cost: number) =>
 			handlers.get("message_end")!(
 				{
 					type: "message_end",
 					message: {
 						role: "assistant",
+						provider: ctx.model?.provider,
+						model: ctx.model?.id,
 						usage: {
+							input: 1_000_000, output: 1_000_000, cacheRead: 1_000_000, cacheWrite: 1_000_000,
 							cost: {
 								input: cost,
 								output: cost,
@@ -239,5 +251,53 @@ test("fast on ignores payloads that are not plain objects", async () => {
 
 	for (const payload of [null, undefined, "body", 42, [1, 2]]) {
 		assert.equal(pi.request(payload, CODEX), undefined);
+	}
+});
+
+test("an already priority-priced Codex message is not multiplied again", async () => {
+	const pi = setup();
+	await pi.fast("on");
+	pi.request({ model: CODEX.id }, CODEX);
+	assert.equal(pi.message(2)?.message.usage.cost.total, 8);
+});
+
+test("unrelated message endings do not consume Codex pricing state", async () => {
+	const pi = setup();
+	await pi.fast("on");
+	pi.request({}, CODEX);
+	assert.equal(pi.finishMessage({ role: "assistant", provider: "other", model: "other" }), undefined);
+	assert.equal(pi.message(1)?.message.usage.cost.total, 8);
+	assert.equal(pi.message(2), undefined, "a matching request is adjusted only once");
+});
+
+test("native Codex SSE pricing is normalized once for default and priority responses", async () => {
+	const entry = fileURLToPath(import.meta.resolve("@earendil-works/pi-ai"));
+	const { stream } = await import(pathToFileURL(join(dirname(entry), "api/openai-codex-responses.js")).href);
+	const apiKey = `stub.${Buffer.from(JSON.stringify({
+		"https://api.openai.com/auth": { chatgpt_account_id: "test-only" },
+	})).toString("base64")}.stub`;
+	for (const id of [CODEX.id, "gpt-5.5"]) {
+		for (const tier of ["default", "priority"]) {
+			const pi = setup();
+			await pi.fast("on");
+			const model = { ...CODEX, id };
+			const event = {
+				type: "response.completed",
+				response: {
+					id: "test", status: "completed", service_tier: tier, output: [],
+					usage: { input_tokens: 1_000_000, output_tokens: 0, total_tokens: 1_000_000 },
+				},
+			};
+			const message = await stream(model, { messages: [] }, {
+				apiKey, transport: "sse",
+				fetch: async () => new Response(`data: ${JSON.stringify(event)}\n\n`),
+				onPayload: (payload: unknown) => pi.request(payload, model),
+			}).result();
+			assert.notEqual(message.stopReason, "error", message.errorMessage);
+			const nativeCost = message.usage.cost.total;
+			const result = pi.finishMessage(message)?.message;
+			assert.equal(result.usage.cost.total, id === "gpt-5.5" ? 2.5 : 2);
+			assert.equal(message.usage.cost.total, nativeCost, "the original message is unchanged");
+		}
 	}
 });

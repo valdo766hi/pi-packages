@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/valdo766hi/pi-packages/pi-lazy-skill-tool-0.3.0/packages/lazy-skill-tool/schema/lazy-skill.schema.json",
+  "$id": "https://raw.githubusercontent.com/valdo766hi/pi-packages/pi-lazy-skill-tool-0.3.1/packages/lazy-skill-tool/schema/lazy-skill.schema.json",
   "title": "Pi lazy skill tool configuration",
   "type": "object",
   "additionalProperties": false,

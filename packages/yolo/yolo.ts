@@ -219,7 +219,8 @@ function patchPermissionUi(
 	const originalCustom = ui.custom;
 
 	const wrappedSelect: YoloUi["select"] = (title, options, optionsConfig) => {
-		if (isPermissionSelect(options) && consumePrompt()) {
+		const heading = title.split("\n", 1)[0];
+		if ((heading === "Permission Required" || heading === "Permission Required (Subagent)") && isPermissionSelect(options) && consumePrompt()) {
 			return Promise.resolve(options[0]);
 		}
 		return originalSelect.call(ui, title, options, optionsConfig);
@@ -242,8 +243,7 @@ function patchPermissionUi(
 export default function (pi: ExtensionAPI): void {
 	let enabled = false;
 	let stateKnown = false;
-	let permissionPromptPending = false;
-	let promptTimer: ReturnType<typeof setTimeout> | undefined;
+	let pendingPrompt: { requestId: string; ambiguous: boolean } | undefined;
 	let restoreUi: (() => void) | undefined;
 	let activeContext: ExtensionContext | undefined;
 
@@ -254,21 +254,24 @@ export default function (pi: ExtensionAPI): void {
 	};
 
 	const clearPendingPrompt = (): void => {
-		permissionPromptPending = false;
-		if (promptTimer !== undefined) {
-			clearTimeout(promptTimer);
-			promptTimer = undefined;
-		}
+		pendingPrompt = undefined;
 	};
 
-	const markPendingPrompt = (): void => {
-		clearPendingPrompt();
-		permissionPromptPending = true;
-		promptTimer = setTimeout(clearPendingPrompt, 10_000);
+	const markPendingPrompt = (requestId: string): void => {
+		// The public event immediately precedes its UI call. Never arm later dialogs.
+		if (pendingPrompt) {
+			if (pendingPrompt.requestId !== requestId) pendingPrompt.ambiguous = true;
+			return;
+		}
+		const prompt = { requestId, ambiguous: false };
+		pendingPrompt = prompt;
+		queueMicrotask(() => {
+			if (pendingPrompt === prompt) clearPendingPrompt();
+		});
 	};
 
 	const consumePendingPrompt = (): boolean => {
-		if (!activeContext || !permissionPromptPending) return false;
+		if (!activeContext || !pendingPrompt || pendingPrompt.ambiguous) return false;
 		if (!syncStatus(activeContext) || !enabled) {
 			clearPendingPrompt();
 			return false;
@@ -303,11 +306,15 @@ export default function (pi: ExtensionAPI): void {
 	};
 
 	const removePromptListeners = [
-		pi.events.on("permissions:ui_prompt", () => {
+		pi.events.on("permissions:ui_prompt", (data) => {
+			if (!isObject(data) || typeof data.requestId !== "string" || !data.requestId ||
+				(data.source !== "tool_call" && data.source !== "skill_input" && data.source !== "skill_read")) return;
 			if (!activeContext || !syncStatus(activeContext)) return;
-			if (enabled) markPendingPrompt();
+			if (enabled) markPendingPrompt(data.requestId);
 		}),
-		pi.events.on("permissions:decision", clearPendingPrompt),
+		pi.events.on("permissions:decision", (data) => {
+			if (isObject(data) && data.requestId === pendingPrompt?.requestId) clearPendingPrompt();
+		}),
 	];
 
 	pi.on("session_start", (_event, ctx) => {
@@ -393,15 +400,6 @@ export default function (pi: ExtensionAPI): void {
 				`YOLO overlay ${enabled ? "on" : "off"}. Permission-system config unchanged.`,
 				enabled ? "warning" : "info",
 			);
-
-			try {
-				await ctx.reload();
-			} catch (error) {
-				ctx.ui.notify(
-					`YOLO state was saved, but Pi reload failed: ${errorMessage(error)}`,
-					"warning",
-				);
-			}
 		},
 	});
 }

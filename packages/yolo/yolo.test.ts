@@ -8,7 +8,9 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import yoloExtension from "./yolo.ts";
 
@@ -124,9 +126,9 @@ async function withAgentDir<T>(
 	}
 }
 
-function emitPermissionPrompt(yolo: ReturnType<typeof setup>): void {
+function emitPermissionPrompt(yolo: ReturnType<typeof setup>, requestId = "request-1"): void {
 	yolo.events.emit("permissions:ui_prompt", {
-		requestId: "request-1",
+		requestId,
 		source: "tool_call",
 		surface: "bash",
 		value: "echo hello",
@@ -166,7 +168,7 @@ test("YOLO is opt-in, persists per session, and never changes native config", as
 					.enabled,
 				true,
 			);
-			assert.equal(parent.reloads(), 1);
+			assert.equal(parent.reloads(), 0);
 
 			parent.handlers.get("session_compact")!({}, parent.ctx);
 			assert.equal(parent.status(), "YOLO: ON");
@@ -432,7 +434,7 @@ test("YOLO can persist state without a permission-system config file", async () 
 	}
 });
 
-test("a reload failure does not lose a committed toggle", async () => {
+test("toggles persist without reloading unrelated extensions", async () => {
 	const agentDir = tempDir("pi-yolo-reload-failure-");
 
 	try {
@@ -449,10 +451,11 @@ test("a reload failure does not lose a committed toggle", async () => {
 				).enabled,
 				true,
 			);
-			assert.equal(
-				yolo.notifications.some((message) => /reload failed/i.test(message)),
-				true,
-			);
+			assert.equal(yolo.reloads(), 0);
+			assert.equal(yolo.notifications.some((message) => /reload failed/i.test(message)), false);
+			await yolo.command("off");
+			assert.equal(yolo.status(), "YOLO: OFF");
+			assert.equal(yolo.reloads(), 0);
 		});
 	} finally {
 		rmSync(agentDir, { recursive: true, force: true });
@@ -470,6 +473,86 @@ test("invalid command arguments do not change the session", async () => {
 			assert.equal(yolo.status(), "YOLO: OFF");
 			assert.equal(yolo.reloads(), 0);
 			assert.deepEqual(yolo.notifications, ["Usage: /yolo [on|off]"]);
+		});
+	} finally {
+		rmSync(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("published permission-system UI adapters still accept the YOLO approval shape", async () => {
+	const { createJiti } = createRequire(import.meta.resolve("@earendil-works/pi-coding-agent"))("jiti");
+	const jiti = createJiti(import.meta.url, { fsCache: false });
+	const source = dirname(fileURLToPath(import.meta.resolve("@gotgenes/pi-permission-system")));
+	const nativePath = (name: string) => {
+		const current = join(source, "authority", name);
+		return existsSync(current) ? current : join(source, name);
+	};
+	const { presentInlinePermissionPrompt } = await jiti.import(nativePath("permission-prompt-component.ts"));
+	const { requestPermissionDecisionFromUi } = await jiti.import(nativePath("permission-dialog.ts"));
+	const { emitUiPromptEvent } = await jiti.import(join(source, "service", "permission-events.ts"));
+	const agentDir = tempDir("pi-yolo-native-ui-");
+	try {
+		await withAgentDir(agentDir, async () => {
+			const yolo = setup(agentDir, "native-ui-session");
+			yolo.handlers.get("session_start")!({}, yolo.ctx);
+			await yolo.command("on");
+			const event = {
+				requestId: "native-ask", source: "tool_call", surface: "bash",
+				value: "echo test", agentName: null, forwarding: null,
+			};
+			emitUiPromptEvent(yolo.events, event);
+			const inline = await presentInlinePermissionPrompt({
+				ui: yolo.ctx.ui, dialogKeys: {}, doublePressToConfirm: false,
+			}, "Permission Required", {});
+			assert.equal(inline.approved, true);
+			assert.equal(inline.state, "approved");
+			assert.equal(yolo.customCalls(), 0);
+			emitUiPromptEvent(yolo.events, { ...event, requestId: "native-select" });
+			const selector = await requestPermissionDecisionFromUi(yolo.ctx.ui, "Permission Required", "test");
+			assert.equal(selector.approved, true);
+			assert.equal(selector.state, "approved");
+			assert.equal(yolo.selectCalls(), 0);
+			yolo.handlers.get("session_shutdown")!({}, yolo.ctx);
+		});
+	} finally {
+		rmSync(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("enabled YOLO rejects malformed, overlapping, and expired prompt arms", async () => {
+	const agentDir = tempDir("pi-yolo-prompt-scope-");
+	try {
+		await withAgentDir(agentDir, async () => {
+			const yolo = setup(agentDir, "scoped-session");
+			yolo.handlers.get("session_start")!({}, yolo.ctx);
+			await yolo.command("on");
+
+			yolo.events.emit("permissions:ui_prompt", {});
+			assert.deepEqual(await yolo.ctx.ui.custom(() => undefined, { overlay: false }), { original: true });
+
+			emitPermissionPrompt(yolo, "first");
+			emitPermissionPrompt(yolo, "second");
+			emitPermissionPrompt(yolo, "third");
+			assert.deepEqual(await yolo.ctx.ui.custom(() => undefined, { overlay: false }), { original: true });
+
+			emitPermissionPrompt(yolo, "expired");
+			await Promise.resolve();
+			assert.deepEqual(await yolo.ctx.ui.custom(() => undefined, { overlay: false }), { original: true });
+
+			emitPermissionPrompt(yolo, "active");
+			yolo.events.emit("permissions:decision", { requestId: "unrelated", result: "allow" });
+			assert.equal(await yolo.ctx.ui.select("Permission Required", permissionOptions), "Yes");
+
+			emitPermissionPrompt(yolo);
+			const ordinary = yolo.ctx.ui.select("Unrelated question", permissionOptions);
+			const permission = yolo.ctx.ui.select("Permission Required (Subagent)", permissionOptions);
+			assert.equal(await ordinary, "No, provide reason");
+			assert.equal(await permission, "Yes");
+
+			emitPermissionPrompt(yolo);
+			assert.deepEqual(await yolo.ctx.ui.custom(() => undefined, { overlay: true }), { original: true });
+			assert.deepEqual(await yolo.ctx.ui.custom(() => undefined, { overlay: false }), { original: true });
+			yolo.handlers.get("session_shutdown")!({}, yolo.ctx);
 		});
 	} finally {
 		rmSync(agentDir, { recursive: true, force: true });

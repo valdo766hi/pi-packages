@@ -54,26 +54,23 @@ function encodeCursor(payload: CursorPayload): string {
 function decodeCursor(
 	cursor: string,
 	fingerprint: string,
-	query: string,
-): number {
-	let payload: CursorPayload;
+	query: string | undefined,
+): CursorPayload {
 	try {
-		payload = JSON.parse(
-			Buffer.from(cursor, "base64url").toString("utf8"),
-		) as CursorPayload;
+		const payload = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as CursorPayload;
+		if (
+			!payload ||
+			payload.v !== 1 ||
+			payload.fingerprint !== fingerprint ||
+			typeof payload.query !== "string" ||
+			(query !== undefined && payload.query !== query) ||
+			!Number.isSafeInteger(payload.offset) ||
+			payload.offset < 0
+		) throw new Error("Invalid cursor");
+		return payload;
 	} catch {
 		throw new LazySkillError("SKILL_SEARCH_CURSOR_STALE");
 	}
-	if (
-		payload.v !== 1 ||
-		payload.fingerprint !== fingerprint ||
-		payload.query !== query ||
-		!Number.isInteger(payload.offset) ||
-		payload.offset < 0
-	) {
-		throw new LazySkillError("SKILL_SEARCH_CURSOR_STALE");
-	}
-	return payload.offset;
 }
 
 function hitsFromSkills(
@@ -148,10 +145,12 @@ export function searchSkills(
 	params: SkillSearchParams = {},
 ): SkillSearchPage {
 	if (!snapshot.policy.valid) throw new LazySkillError("POLICY_INVALID");
-	const query = params.query?.trim() ?? "";
-	const offset = params.cursor
-		? decodeCursor(params.cursor, snapshot.fingerprint, query)
-		: 0;
+	const requestedQuery = params.query?.trim();
+	const cursor = params.cursor
+		? decodeCursor(params.cursor, snapshot.fingerprint, requestedQuery)
+		: undefined;
+	const query = requestedQuery ?? cursor?.query ?? "";
+	const offset = cursor?.offset ?? 0;
 	const browse = orderedVisible(snapshot);
 	if (!query) {
 		return pageFrom(
@@ -203,13 +202,14 @@ export function renderSearchPage(
 ): string {
 	const catalog = renderSafeCatalog(skills, { maxDescriptionCharacters: 0 });
 	const names = page.skills.map((skill) => skill.name);
+	let summary = "Search results are suggestions, not an exhaustive catalog.";
+	if (page.mode === "browse") summary = "Browsing all policy-visible skill metadata.";
+	else if (page.weak) {
+		summary = "No strong search match. This does not mean no relevant skill exists. Browse with skill_search without a query, or try a different query.";
+	}
 	const lines = [
 		catalog,
-		page.mode === "search" && page.weak
-			? "No strong search match. This does not mean no relevant skill exists. Browse with skill_search without a query, or try a different query."
-			: page.mode === "browse"
-				? "Browsing all policy-visible skill metadata."
-				: "Search results are suggestions, not an exhaustive catalog.",
+		summary,
 		page.hasMore
 			? "More results exist. Continue with the returned cursor."
 			: "No further pages in this result set.",

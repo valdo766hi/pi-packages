@@ -1,12 +1,19 @@
-// @ts-nocheck -- Pi provides its extension types and Node globals at runtime.
 // Two-line footer: where you are and what is thinking, then context, usage, and
 // active modes. Narrow terminals shed detail in a fixed order instead of wrapping.
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+	SettingsManager,
+	type ExtensionAPI,
+	type ExtensionContext,
+	type SessionEntry,
+	type Theme,
+	type ThemeColor,
+} from "@earendil-works/pi-coding-agent";
+import type { Usage } from "@earendil-works/pi-ai";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { basename, win32 } from "node:path";
 
-/** Mirrors pi's default `compaction.reserveTokens`; auto-compaction fires past it. */
-const COMPACTION_RESERVE_TOKENS = 16_384;
+type FooterTheme = Pick<Theme, "fg" | "bold">;
 
 const BAR_MIN_CELLS = 8;
 const BAR_MAX_CELLS = 24;
@@ -15,7 +22,7 @@ const DANGER_AT = 0.9;
 const GAP = "  ";
 
 /** Known on/off statuses rendered as chips; any `<label>: OFF` status is hidden. */
-const CHIPS: Record<string, { icon: string; label: string; color: string }> = {
+const CHIPS: Record<string, { icon: string; label: string; color: ThemeColor }> = {
 	fast: { icon: "⚡", label: "fast", color: "accent" },
 	yolo: { icon: "⚠", label: "yolo", color: "warning" },
 };
@@ -28,20 +35,22 @@ export function formatTokens(count: number): string {
 	return `${Math.round(count / 1_000_000)}M`;
 }
 
-function zoneColor(ratio: number): string {
+function zoneColor(ratio: number): ThemeColor {
 	if (ratio > DANGER_AT) return "error";
 	if (ratio > WARN_AT) return "warning";
 	return "success";
 }
 
-function thinkingColor(level: string): string {
-	const known = ["minimal", "low", "medium", "high", "xhigh", "max"];
-	if (!known.includes(level)) return "thinkingOff";
-	return `thinking${level[0].toUpperCase()}${level.slice(1)}`;
+function thinkingColor(level: ExtensionContext["thinkingLevel"]): ThemeColor {
+	const colors = {
+		off: "thinkingOff", minimal: "thinkingMinimal", low: "thinkingLow",
+		medium: "thinkingMedium", high: "thinkingHigh", xhigh: "thinkingXhigh", max: "thinkingMax",
+	} as const;
+	return colors[level ?? "off"] ?? "thinkingOff";
 }
 
 /** Thin bar in half-cell steps; `│` marks where auto-compaction triggers. */
-export function renderBar(theme: any, ratio: number | null, cells: number, markRatio: number): string {
+export function renderBar(theme: FooterTheme, ratio: number | null, cells: number, markRatio: number): string {
 	const halves = ratio === null ? 0 : Math.round(Math.min(1, Math.max(0, ratio)) * cells * 2);
 	const full = Math.floor(halves / 2);
 	const half = halves % 2;
@@ -56,7 +65,7 @@ export function renderBar(theme: any, ratio: number | null, cells: number, markR
 }
 
 /** Pad `left` and `right` to `width`, truncating the right side first. */
-function joinLeftRight(left: string, right: string, width: number, theme: any): string {
+function joinLeftRight(left: string, right: string, width: number, theme: FooterTheme): string {
 	const leftWidth = visibleWidth(left);
 	if (leftWidth >= width) return truncateToWidth(left, width, theme.fg("dim", "…"));
 	if (!right) return left;
@@ -69,7 +78,7 @@ function joinLeftRight(left: string, right: string, width: number, theme: any): 
 function projectName(cwd: string): string {
 	const home = process.env.HOME || process.env.USERPROFILE;
 	if (home && cwd === home) return "~";
-	return cwd.split("/").filter(Boolean).pop() || "/";
+	return (win32.isAbsolute(cwd) && !cwd.startsWith("/") ? win32.basename(cwd) : basename(cwd)) || cwd;
 }
 
 function sanitize(text: string): string {
@@ -77,7 +86,7 @@ function sanitize(text: string): string {
 }
 
 /** Active modes as chips; known OFF toggles are hidden. `iconsOnly` keeps chips but drops their labels. */
-function renderStatuses(theme: any, statuses: ReadonlyMap<string, string>, iconsOnly: boolean): string {
+function renderStatuses(theme: FooterTheme, statuses: ReadonlyMap<string, string>, iconsOnly: boolean): string {
 	const chips: string[] = [];
 	const others: string[] = [];
 	for (const [key, raw] of [...statuses.entries()].sort(([a], [b]) => a.localeCompare(b))) {
@@ -101,10 +110,10 @@ type Totals = { input: number; output: number; cost: number; hitRate?: number };
 function createUsageTotals() {
 	let seen = -1;
 	let totals: Totals = { input: 0, output: 0, cost: 0 };
-	return (entries: any[]): Totals => {
+	return (entries: readonly SessionEntry[]): Totals => {
 		if (entries.length === seen) return totals;
 		const next: Totals = { input: 0, output: 0, cost: 0 };
-		const add = (u: any) => {
+		const add = (u: Usage | undefined) => {
 			if (!u) return;
 			next.input += u.input ?? 0;
 			next.output += u.output ?? 0;
@@ -129,7 +138,7 @@ function createUsageTotals() {
 }
 
 /** Right side of line 2, from most to least detailed; narrow terminals take later variants. */
-function statsVariants(theme: any, totals: Totals, statuses: ReadonlyMap<string, string>): string[] {
+function statsVariants(theme: FooterTheme, totals: Totals, statuses: ReadonlyMap<string, string>): string[] {
 	const tokens = theme.fg("dim", `↑${formatTokens(totals.input)} ↓${formatTokens(totals.output)}`);
 	const cache = totals.hitRate !== undefined ? theme.fg("dim", `◎ ${totals.hitRate.toFixed(0)}%`) : "";
 	const cost = totals.cost > 0 ? theme.fg("muted", `$${totals.cost.toFixed(2)}`) : "";
@@ -148,11 +157,19 @@ function statsVariants(theme: any, totals: Totals, statuses: ReadonlyMap<string,
 }
 
 export default function (pi: ExtensionAPI) {
-	const install = (ctx: any) => {
+	// Pi 0.85 ignores the model argument; Pi 1.0 resolves model overrides.
+	let readCompaction: ((model: ExtensionContext["model"]) => ReturnType<SettingsManager["getCompactionSettings"]>) | undefined;
+	const refreshSettings = (ctx: ExtensionContext) => {
 		if (ctx.mode !== "tui") return;
+		const next = SettingsManager.create(ctx.cwd, undefined, { projectTrusted: ctx.isProjectTrusted() });
+		readCompaction = next.drainErrors().length === 0 ? next.getCompactionSettings.bind(next) : undefined;
+	};
+	const install = (ctx: ExtensionContext) => {
+		if (ctx.mode !== "tui") return;
+		refreshSettings(ctx);
 		const usageTotals = createUsageTotals();
 
-		ctx.ui.setFooter((tui: any, theme: any, footerData: any) => {
+		ctx.ui.setFooter((tui, theme, footerData) => {
 			const unsubscribe = footerData.onBranchChange(() => tui.requestRender());
 
 			return {
@@ -174,7 +191,7 @@ export default function (pi: ExtensionAPI) {
 						model && footerData.getAvailableProviderCount() > 1 ? theme.fg("dim", `${model.provider}/`) : "";
 					let thinking = "";
 					if (model?.reasoning) {
-						const level = ctx.thinkingLevel || pi.getThinkingLevel?.() || "off";
+						const level = ctx.thinkingLevel ?? "off";
 						thinking = ` ${theme.fg(thinkingColor(level), `● ${level}`)}`;
 					}
 					const location = left1.join(theme.fg("dim", " · "));
@@ -192,10 +209,10 @@ export default function (pi: ExtensionAPI) {
 							: theme.bold(theme.fg(zoneColor(ratio), `${Math.round(ratio * 100)}%`));
 					const used = usage?.tokens != null ? formatTokens(usage.tokens) : "?";
 					const window = theme.fg("dim", `${used}/${formatTokens(contextWindow)}`);
-					const markRatio =
-						contextWindow > COMPACTION_RESERVE_TOKENS
-							? (contextWindow - COMPACTION_RESERVE_TOKENS) / contextWindow
-							: 0;
+					const compaction = readCompaction?.(model);
+					const markRatio = compaction?.enabled && contextWindow > compaction.reserveTokens
+						? (contextWindow - compaction.reserveTokens) / contextWindow
+						: 0;
 
 					const variants = statsVariants(
 						theme,
@@ -217,7 +234,7 @@ export default function (pi: ExtensionAPI) {
 					}
 					if (!line2) {
 						// No room for the bar: keep the percentage and the most compact chips.
-						line2 = joinLeftRight(percent, variants[variants.length - 1], width, theme);
+						line2 = joinLeftRight(percent, variants.at(-1) ?? "", width, theme);
 					}
 
 					return [joinLeftRight(location, right1, width, theme), line2];
@@ -231,6 +248,10 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		// Re-install per session so the closure never holds a stale session context.
 		if (enabled) install(ctx);
+	});
+
+	pi.on("before_agent_start", (_event, ctx) => {
+		if (enabled) refreshSettings(ctx);
 	});
 
 	pi.registerCommand("footer", {

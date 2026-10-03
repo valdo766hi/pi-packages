@@ -197,18 +197,11 @@ export function renderAdaptiveCatalog(
 	incomplete = false,
 ): string {
 	const parts: string[] = [];
-	if (remainingNames.length === 0 && !incomplete) {
-		const catalog = renderSafeCatalog(describedSkills, config);
-		if (catalog) parts.push(catalog);
-	} else {
-		const catalog = renderSafeCatalog(describedSkills, config);
-		if (catalog) parts.push(catalog);
-		const names = remainingNames.toSorted(compareText);
-		if (names.length > 0) {
-			parts.push(
-				`<other_skill_names>${escapeXmlText(JSON.stringify(names))}</other_skill_names>`,
-			);
-		}
+	const catalog = renderSafeCatalog(describedSkills, config);
+	if (catalog) parts.push(catalog);
+	const names = remainingNames.toSorted(compareText);
+	if (names.length > 0) {
+		parts.push(`<other_skill_names>${escapeXmlText(JSON.stringify(names))}</other_skill_names>`);
 	}
 	if (incomplete) parts.push(INCOMPLETE_DISCOVERY_INSTRUCTION);
 	return parts.filter(Boolean).join("\n");

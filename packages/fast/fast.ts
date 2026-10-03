@@ -4,6 +4,7 @@
 // the process into fast mode explicitly.
 
 import type * as Pi from "@earendil-works/pi-coding-agent";
+import { calculateCost } from "@earendil-works/pi-ai";
 
 /** Providers whose requests fast mode may touch. Keeps OpenAI-compatible third parties out. */
 const FAST_PROVIDERS = new Set(["openai", "openai-codex"]);
@@ -20,7 +21,7 @@ const ICON = "\u{f0e7}";
 
 export default function (pi: Pi.ExtensionAPI) {
 	let enabled = isEnvEnabled();
-	let pendingCostMultiplier = 1;
+	let pendingModel: Pi.ExtensionContext["model"];
 
 	const updateStatus = (ctx: Pi.ExtensionContext) => {
 		ctx.ui.setStatus("fast", `${ICON} FAST: ${enabled ? "ON" : "OFF"}`);
@@ -31,7 +32,7 @@ export default function (pi: Pi.ExtensionAPI) {
 		"session_start",
 		(_event: Pi.SessionStartEvent, ctx: Pi.ExtensionContext) => {
 			enabled = isEnvEnabled();
-			pendingCostMultiplier = 1;
+			pendingModel = undefined;
 			updateStatus(ctx);
 		},
 	);
@@ -39,7 +40,7 @@ export default function (pi: Pi.ExtensionAPI) {
 	pi.on(
 		"before_provider_request",
 		(event: Pi.BeforeProviderRequestEvent, ctx: Pi.ExtensionContext) => {
-			pendingCostMultiplier = 1;
+			pendingModel = undefined;
 			if (!enabled) return;
 
 			const model = ctx.model;
@@ -61,21 +62,22 @@ export default function (pi: Pi.ExtensionAPI) {
 			// An explicit tier — including one set by an earlier handler — wins.
 			if ("service_tier" in payload) return;
 
-			// Codex reports its tier as "default", so Pi cannot price a tier added this late.
-			if (model.provider === "openai-codex") {
-				pendingCostMultiplier = model.id === "gpt-5.5" ? 2.5 : 2;
-			}
+			// Codex may report either default or priority; normalize its cost once.
+			if (model.provider === "openai-codex") pendingModel = model;
 			return { ...payload, service_tier: "priority" };
 		},
 	);
 
 	pi.on("message_end", (event: Pi.MessageEndEvent) => {
-		if (event.message.role !== "assistant" || pendingCostMultiplier === 1)
-			return;
+		if (event.message.role !== "assistant" || !pendingModel) return;
 
-		const multiplier = pendingCostMultiplier;
-		pendingCostMultiplier = 1;
-		const cost = event.message.usage.cost;
+		const model = pendingModel;
+		if (event.message.provider !== model.provider || event.message.model !== model.id) return;
+		pendingModel = undefined;
+		const multiplier = model.id === "gpt-5.5" ? 2.5 : 2;
+		const usage = { ...event.message.usage, cost: { ...event.message.usage.cost } };
+		// Recalculate from catalog prices, not an already tier-adjusted response.
+		const cost = calculateCost(model, usage);
 		return {
 			message: {
 				...event.message,

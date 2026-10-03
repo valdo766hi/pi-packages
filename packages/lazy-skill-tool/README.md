@@ -4,14 +4,16 @@ A Pi extension that keeps skill routing metadata compact and loads instructions 
 
 Pi remains the source of truth for skill discovery, duplicate resolution, trust, package/settings paths, temporary CLI paths, and canonical file locations. This extension does not scan for skills independently.
 
-## What v0.3.0 does
+## What v0.3.1 does
 
 - Makes `adaptive` the default: start compact, keep every policy-visible skill discoverable, and expand when evidence is weak or the full catalog is inexpensive.
 - Keeps `safe` as an override that always exposes complete descriptions for every policy-visible, model-invokable skill.
 - Registers two model tools: exact-name `skill` and metadata-only `skill_search`.
 - Puts per-task routing catalogs in a task-local custom message so the system prompt prefix stays stable.
 - Publishes one complete generation (`ready`) or blocks skill operations (`blocked`); unsafe integration failures abort the provider request instead of replacing Pi's host prompt.
-- Rechecks authorization after async approval or file reads, and binds paginated skill bodies to a source revision.
+- Rechecks live policy fingerprints after async approval and file reads, and binds paginated skill bodies to a source revision.
+- Preserves exact-name pins in multi-intent prompts, including short clauses and names before prompt truncation.
+- Continues metadata search with only the returned cursor, preserving the original query.
 
 The router controls presentation, not authority, permissions, or the final skill choice. Hiding descriptions cannot guarantee identical selection to showing every description. Selection quality is demonstrated against the `safe` baseline; authorization and complete discovery are guaranteed.
 
@@ -26,10 +28,10 @@ pi install npm:@valdo766hi/pi-lazy-skill-tool
 The package requires:
 
 - Node.js `>=22.19.0`;
-- `@earendil-works/pi-coding-agent >=0.85.1 <0.86.0`;
+- `@earendil-works/pi-coding-agent >=0.85.1 <0.86.0 || >=1.0.0 <1.1.0`;
 - `typebox >=1.3.7 <2.0.0` supplied by Pi.
 
-v0.3.0 uses Pi 0.85's canonical skill formatter, anchored skill-block parser, command registry, tool ownership metadata, active-tool API, project trust state, `before_agent_start` custom messages, `context` hooks, and composed autocomplete API. The verified minimum and current compatible release is `0.85.1`. Pi 0.85.0 exposes the needed type surface, but its published top-level module fails a clean import because it references an undeclared `@earendil-works/pi-server`; this package therefore does not claim 0.85.0 support. It does not claim compatibility outside the 0.85 minor series.
+v0.3.1 uses Pi's canonical skill formatter, anchored skill-block parser, command registry, tool ownership metadata, active-tool API, project trust state, `before_agent_start` custom messages, `context` hooks, and composed autocomplete API. Tests, type checks, and benchmarks validate Pi `0.85.1` and `1.0.0`. Pi 0.85.0's published top-level module fails a clean import because it references an undeclared `@earendil-works/pi-server`; this package therefore does not claim 0.85.0 support or compatibility outside the 0.85 and 1.0 minor series.
 
 Pi catches errors from `before_agent_start`, `context`, and `before_provider_request` and continues. This package therefore does not rely on thrown hook errors. When safe context cannot be established it strips skill metadata from the host prompt, publishes `blocked`, and calls `ctx.abort()` from `context`, `agent_start`, `turn_start`, and `before_provider_request` — after the agent run exists, so the abort signal can cancel the provider request.
 
@@ -119,7 +121,7 @@ skill_search({}) // browse all policy-visible skill metadata
 skill_search({ cursor: previousResult.nextCursor })
 ```
 
-Results include exact names and complete descriptions. They never include skill bodies or filesystem paths. Browse-all pagination is deterministic and independent of lexical matching. Cursors are bound to the current registry/policy fingerprint and query; stale cursors are rejected. “No strong search match” is not represented as “no relevant skill exists.”
+Results include exact names and complete descriptions. They never include skill bodies or filesystem paths. Browse-all pagination is deterministic and independent of lexical matching. Cursors are bound to the current registry/policy fingerprint and query. Cursor-only continuation reuses the original query; an explicitly different query, stale fingerprint, or malformed cursor is rejected with `SKILL_SEARCH_CURSOR_STALE`. “No strong search match” is not represented as “no relevant skill exists.”
 
 Scores, ranking evidence, and canonical paths stay in non-model details.
 
@@ -164,11 +166,11 @@ Locations, from lower to higher precedence:
 
 The extension uses Pi's current `cwd` directly. It does not walk parent directories or invent another project root.
 
-Example using the immutable v0.3.0 schema URL:
+Example using the immutable v0.3.1 schema URL (available after the release tag is pushed):
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/valdo766hi/pi-packages/pi-lazy-skill-tool-0.3.0/packages/lazy-skill-tool/schema/lazy-skill.schema.json",
+  "$schema": "https://raw.githubusercontent.com/valdo766hi/pi-packages/pi-lazy-skill-tool-0.3.1/packages/lazy-skill-tool/schema/lazy-skill.schema.json",
   "routing": "adaptive",
   "permission": {
     "skill": {
@@ -294,7 +296,7 @@ Run from the repository root:
 npm run benchmark:lazy-skills
 ```
 
-The benchmark uses Pi 0.85.1's `estimateTokens()` and reports exact UTF-8 bytes plus component token estimates. It compares stock Pi, an OpenCode-style verbose name/description/location catalog, frozen v0.1.6 full/adaptive serialization, and v0.3.0 safe/adaptive at 1, 5, 10, 25, 50, and 100 skills.
+The benchmark uses the installed Pi's `estimateTokens()` and reports exact UTF-8 bytes plus component token estimates. It compares stock Pi, an OpenCode-style verbose name/description/location catalog, frozen v0.1.6 full/adaptive serialization, and current safe/adaptive at 1, 5, 10, 25, 50, and 100 skills. The v0.3.0 catalog figures below are unchanged in v0.3.1 and have been revalidated on Pi 0.85.1 and 1.0.0.
 
 Observed on the release-validation workstation:
 
@@ -330,7 +332,7 @@ These are reproducible component estimates, not complete provider request counts
 - Unsafe prompt integration preserves unrelated host instructions and aborts the provider request.
 - Continuation JSON includes `rev`. Continuing without a matching revision fails closed.
 - `full` remains a deprecated alias for `safe`.
-- The supported Pi peer range is unchanged: `>=0.85.1 <0.86.0`.
+- v0.3.1 adds the Pi 1.0 series while retaining `>=0.85.1 <0.86.0` support.
 
 ## Migration from v0.1.x
 

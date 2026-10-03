@@ -12,6 +12,10 @@ This extension registers `/yolo` and adds a session-local approval overlay for
 `@gotgenes/pi-permission-system`. Install that permission-system extension
 separately before using YOLO.
 
+Validated pairs: Pi 0.85.1 with permission-system 32.1.0, and Pi 1.0.0 with
+permission-system 39.0.2, on Node.js 22.19+. Versions 33–38 are not claimed as
+compatible. See [CHANGELOG.md](./CHANGELOG.md) for release notes.
+
 ## Commands
 
 ```text
@@ -30,7 +34,7 @@ session-keyed file:
 `PI_CODING_AGENT_DIR` is honored. The same session restores its state after a
 restart, reload, resume, or compaction. A new session, fork, or subagent starts
 OFF unless explicitly enabled there, matching the opt-in behavior of
-`packages/fast`.
+`packages/fast`. Toggling does not reload Pi or reset other extensions' modes.
 
 ## Permission behavior
 
@@ -43,10 +47,16 @@ replaced by this package.
 
 The overlay supports both Pi's selector-based UI and TUI custom permission
 dialog. The public event exposes facts but no request-correlated UI callback, so
-the extension uses a short-lived process-local arm and wraps the next matching
-Pi UI method. This is a best-effort integration coupled to the permission
-system's prompt labels and result shape. Ordinary UI dialogs remain untouched
-while YOLO is off. If the native permission-system extension is not loaded,
+the extension arms only the synchronous UI call immediately after a valid
+request event and expires the arm at the next microtask. Malformed events and
+overlapping request IDs cannot arm approval; decision events clear only their
+matching request. Selector headings must match the native permission dialog.
+This is a best-effort integration coupled to the permission system's prompt
+labels and result shape. Ordinary UI dialogs remain untouched
+while YOLO is off. Even while enabled, unrelated selectors are delegated.
+Custom inline dialogs expose no request identity: another extension opening an
+inline dialog synchronously from that same event remains an integration limit.
+If the native permission-system extension is not loaded,
 YOLO state can still be persisted but there is no permission prompt to
 intercept.
 

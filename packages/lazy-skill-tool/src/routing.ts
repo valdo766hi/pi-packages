@@ -578,11 +578,12 @@ function chooseCandidates(
 	}
 
 	const topRanked = ranked[0];
-	const selectionFloor = !topRanked
-		? Number.POSITIVE_INFINITY
-		: topRanked.score < MIN_CONFIDENT_SCORE
+	let selectionFloor = Number.POSITIVE_INFINITY;
+	if (topRanked) {
+		selectionFloor = topRanked.score < MIN_CONFIDENT_SCORE
 			? topRanked.score * 0.5
 			: Math.max(MIN_CONFIDENT_SCORE, topRanked.score * 0.3);
+	}
 
 	const includedRanked: RoutingEvidence[] = [];
 	for (const item of ranked) {
@@ -698,9 +699,13 @@ function selectCoveringIntents(
 	index: RoutingIndex,
 	intents: readonly string[],
 	catalogTokenBudget: number,
+	pins: readonly RoutingEvidence[],
 ): RoutingSelection {
-	const selected = new Map<string, RuntimeSkill>();
-	const batches: RoutingEvidence[][] = [];
+	const pinnedNames = new Set(pins.map((item) => item.name));
+	const selected = new Map(
+		index.documents.flatMap(({ skill }) => pinnedNames.has(skill.name) ? [[skill.name, skill] as const] : []),
+	);
+	const batches: (readonly RoutingEvidence[])[] = [pins];
 	let uncovered = false;
 	for (const intent of intents) {
 		const evidence = scoreDocuments(index, intentQuery(intent), [intent]);
@@ -729,14 +734,13 @@ function selectCoveringIntents(
 			evidence,
 		);
 	}
+	let reason = "ranked";
+	if (uncovered) reason = "uncovered-intent";
+	else if (exactNames(evidence).length > 0) reason = "exact-name";
 	return {
 		...adaptiveSelection(index, evidence, selected),
 		fallback: uncovered,
-		reason: uncovered
-			? "uncovered-intent"
-			: exactNames(evidence).length > 0
-				? "exact-name"
-				: "ranked",
+		reason,
 	};
 }
 
@@ -753,7 +757,8 @@ export function selectRoutingSkills(
 	try {
 		const intents = splitIntents(query.currentPrompt);
 		if (intents.length >= 2) {
-			return selectCoveringIntents(index, intents, catalogTokenBudget);
+			const pins = (scoreDocuments(index, query, segments) ?? []).filter((item) => item.exactName);
+			return selectCoveringIntents(index, intents, catalogTokenBudget, pins);
 		}
 		const evidence = scoreDocuments(index, query, segments);
 		if (!evidence) return fullSelection(index, "no-query-terms");

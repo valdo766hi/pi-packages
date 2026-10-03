@@ -1,6 +1,7 @@
+---
 name: Publish
 
-on:
+"on":
   push:
     tags:
       - "pi-*-*.*.*"
@@ -13,16 +14,16 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
         with:
           persist-credentials: false
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38  # v6
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
           package-manager-cache: false
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
       - name: Validate release tag
         run: node scripts/resolve-release.mjs "$GITHUB_REF_NAME"
       - name: Validate package and tag
@@ -32,9 +33,12 @@ jobs:
         shell: bash
         run: |
           release="$(node scripts/resolve-release.mjs "$GITHUB_REF_NAME")"
-          workspace="$(node -e 'console.log(JSON.parse(process.argv[1]).workspace)' "$release")"
-          package_name="$(node -e 'console.log(JSON.parse(process.argv[1]).packageName)' "$release")"
-          version="$(node -e 'console.log(JSON.parse(process.argv[1]).version)' "$release")"
+          workspace="$(node -p \
+            'JSON.parse(process.argv[1]).workspace' "$release")"
+          package_name="$(node -p \
+            'JSON.parse(process.argv[1]).packageName' "$release")"
+          version="$(node -p \
+            'JSON.parse(process.argv[1]).version' "$release")"
           echo "Publishing ${package_name}@${version}"
           echo "package_name=${package_name}" >> "$GITHUB_OUTPUT"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
@@ -42,13 +46,15 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          PACKAGE_NAME: ${{ steps.package.outputs.package_name }}
+          PACKAGE_VERSION: ${{ steps.package.outputs.version }}
         shell: bash
         run: |
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            echo "GitHub release $GITHUB_REF_NAME already exists; leaving it unchanged."
+            echo "Release $GITHUB_REF_NAME already exists; unchanged."
             exit 0
           fi
           gh release create "$GITHUB_REF_NAME" \
             --verify-tag \
-            --title "${{ steps.package.outputs.package_name }}@${{ steps.package.outputs.version }}" \
+            --title "${PACKAGE_NAME}@${PACKAGE_VERSION}" \
             --generate-notes

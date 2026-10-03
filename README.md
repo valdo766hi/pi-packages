@@ -66,13 +66,24 @@ the prepared lazy-skill release, validate and push its matching tag:
 npm run check
 node scripts/resolve-release.mjs pi-lazy-skill-tool-0.3.1
 git tag -a pi-lazy-skill-tool-0.3.1 -m "release: pi-lazy-skill-tool 0.3.1"
-git push origin main --follow-tags
+git push origin main
+git push origin refs/tags/pi-lazy-skill-tool-0.3.1
 ```
 
 Use the corresponding workspace and tag for `fast`, `footer`, or `yolo`. The
 publish workflow validates the tag, publishes only the matching public package
 with npm trusted publishing and provenance, and creates the matching GitHub
-Release with generated notes.
+Release with generated notes. Push release tags one at a time: GitHub does not
+emit tag push events when more than three tags are pushed together.
+
+To recover a missed trigger, run Publish manually against an existing tag:
+
+```sh
+gh workflow run publish.yml --ref main -f tag=pi-lazy-skill-tool-0.3.1
+```
+
+The manual run checks out that tag, validates its package/version, and runs the
+same checks and trusted publishing steps. It does not move or recreate tags.
 
 ## License
 

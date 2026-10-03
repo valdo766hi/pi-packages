@@ -48,7 +48,7 @@ pi-yolo-x.x.x
 pi-lazy-skill-tool-x.x.x
 ```
 
-Prepared patch versions (not yet published):
+Current published versions:
 
 | Workspace | Version | Release tag |
 | --- | --- | --- |
@@ -60,14 +60,16 @@ Prepared patch versions (not yet published):
 For subsequent releases, bump the chosen workspace with
 `npm version --workspace=packages/<name> --no-git-tag-version <next-version>`
 and add its changelog entry. Commit the reviewed changes before tagging. For
-the prepared lazy-skill release, validate and push its matching tag:
+a future lazy-skill release, set `version` to its new manifest version below;
+existing release tags must not be recreated:
 
 ```sh
+version="<next-version>"
 npm run check
-node scripts/resolve-release.mjs pi-lazy-skill-tool-0.3.1
-git tag -a pi-lazy-skill-tool-0.3.1 -m "release: pi-lazy-skill-tool 0.3.1"
+node scripts/resolve-release.mjs "pi-lazy-skill-tool-$version"
+git tag -a "pi-lazy-skill-tool-$version" -m "release: pi-lazy-skill-tool $version"
 git push origin main
-git push origin refs/tags/pi-lazy-skill-tool-0.3.1
+git push origin "refs/tags/pi-lazy-skill-tool-$version"
 ```
 
 Use the corresponding workspace and tag for `fast`, `footer`, or `yolo`. The

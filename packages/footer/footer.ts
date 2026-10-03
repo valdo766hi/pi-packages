@@ -49,19 +49,16 @@ function thinkingColor(level: ExtensionContext["thinkingLevel"]): ThemeColor {
 	return colors[level ?? "off"] ?? "thinkingOff";
 }
 
-/** Thin bar in half-cell steps; `│` marks where auto-compaction triggers. */
+/** Thin bar with a `■` head at the current usage; `│` marks where auto-compaction triggers. */
 export function renderBar(theme: FooterTheme, ratio: number | null, cells: number, markRatio: number): string {
-	const halves = ratio === null ? 0 : Math.round(Math.min(1, Math.max(0, ratio)) * cells * 2);
-	const full = Math.floor(halves / 2);
-	const half = halves % 2;
+	const head = ratio === null ? -1 : Math.min(cells - 1, Math.floor(Math.min(1, Math.max(0, ratio)) * cells));
 	const markIndex = markRatio > 0 && markRatio < 1 ? Math.min(cells - 1, Math.floor(markRatio * cells)) : -1;
-	const color = ratio === null ? "dim" : zoneColor(ratio);
 
 	let empty = "";
-	for (let i = full + half; i < cells; i++) {
+	for (let i = head + 1; i < cells; i++) {
 		empty += i === markIndex ? theme.fg("muted", "│") : theme.fg("dim", "─");
 	}
-	return theme.fg(color, "━".repeat(full) + (half ? "╸" : "")) + empty;
+	return ratio === null || head < 0 ? empty : theme.fg(zoneColor(ratio), "━".repeat(head) + "■") + empty;
 }
 
 /** Pad `left` and `right` to `width`, truncating the right side first. */

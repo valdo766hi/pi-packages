@@ -72,7 +72,7 @@ test("wide footer shows location, model, context, usage, and active chips on two
 	assert.equal(lines.length, 2);
 	for (const line of lines) assert.equal(visibleWidth(line), 120);
 	assert.match(lines[0], /^nix · ⎇ main +gpt-6-luna ● max$/);
-	assert.match(lines[1], /^━+[╸─│]* {2}42% {2}108k\/258k +↑1\.2M ↓84k {2}◎ 0% {2}\$0\.50 {2}⚡ fast {2}⚠ yolo {2}lsp ok$/);
+	assert.match(lines[1], /^━*■[─│]* {2}42% {2}108k\/258k +↑1\.2M ↓84k {2}◎ 0% {2}\$0\.50 {2}⚡ fast {2}⚠ yolo {2}lsp ok$/);
 });
 
 test("OFF toggles are hidden and narrow terminals shed detail before the bar", () => {
@@ -81,11 +81,11 @@ test("OFF toggles are hidden and narrow terminals shed detail before the bar", (
 
 	const medium = render(44);
 	for (const line of medium) assert.ok(visibleWidth(line) <= 44, line);
-	assert.match(medium[1], /^[━╸─│]+ {2}42% {2}108k\/258k +↑1\.2M ↓84k {2}⚠ yolo$/);
+	assert.match(medium[1], /^━*■[─│]* {2}42% {2}108k\/258k +↑1\.2M ↓84k {2}⚠ yolo$/);
 
 	const narrow = render(32);
 	for (const line of narrow) assert.ok(visibleWidth(line) <= 32, line);
-	assert.match(narrow[1], /^[━╸─│]+ {2}42% {2}108k\/258k +⚠ yolo$/);
+	assert.match(narrow[1], /^━*■[─│]* {2}42% {2}108k\/258k +⚠ yolo$/);
 
 	const tiny = render(20);
 	for (const line of tiny) assert.ok(visibleWidth(line) <= 20, line);
@@ -111,9 +111,10 @@ test("reasoning models without a thinking level display off, not undefined", () 
 	assert.match(footer.render(120)[0]!, /● off$/);
 });
 
-test("bar fills in half cells and marks the compaction point", () => {
-	assert.equal(renderBar(plain, 0.5, 10, 0.95), "━━━━━────│");
-	assert.equal(renderBar(plain, 0.25, 10, 0), "━━╸───────");
+test("bar puts a head at the current usage and marks the compaction point", () => {
+	assert.equal(renderBar(plain, 0.5, 10, 0.95), "━━━━━■───│");
+	assert.equal(renderBar(plain, 0.25, 10, 0), "━━■───────");
+	assert.equal(renderBar(plain, 1, 4, 0), "━━━■");
 	assert.equal(renderBar(plain, null, 4, 0), "────");
 });
 

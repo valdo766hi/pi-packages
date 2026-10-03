@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.0
+
+- Mark the current context usage with a `■` head in the zone color at the end of the thin bar.
+
 ## 0.2.1
 
 - Derive the compaction marker from global and trusted-project settings, including model overrides supported by the host.

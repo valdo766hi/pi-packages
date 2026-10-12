@@ -36,5 +36,5 @@ model overrides when supported by Pi. Settings refresh at installation and
 before each turn, without writes. Disabled compaction or unreadable settings
 hide the marker. Project labels support POSIX, Windows drive, and UNC paths.
 
-Validated with Pi 0.85.1 and 1.0.0 on Node.js 22.19+.
+Validated with Pi 0.85.1, 1.0.0, and 1.1.0 on Node.js 22.19+.
 See [CHANGELOG.md](./CHANGELOG.md) for release notes.

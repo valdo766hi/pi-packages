@@ -12,8 +12,8 @@ This extension registers `/yolo` and adds a session-local approval overlay for
 `@gotgenes/pi-permission-system`. Install that permission-system extension
 separately before using YOLO.
 
-Validated pairs: Pi 0.85.1 with permission-system 32.1.0, and Pi 1.0.0 with
-permission-system 39.0.2, on Node.js 22.19+. Versions 33–38 are not claimed as
+Validated pairs: Pi 0.85.1 with permission-system 32.1.0, and Pi 1.0.0 or 1.1.0
+with permission-system 39.0.2, on Node.js 22.19+. Versions 33–38 are not claimed as
 compatible. See [CHANGELOG.md](./CHANGELOG.md) for release notes.
 
 ## Commands

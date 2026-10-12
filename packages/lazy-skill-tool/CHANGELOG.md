@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.2
+
+### Changed
+
+- Support Pi 1.1.x and validate against Pi 1.1.0; retain Pi 0.85.x and 1.0.x compatibility.
+
 ## 0.3.1
 
 ### Fixed

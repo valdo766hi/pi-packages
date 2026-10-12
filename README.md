@@ -24,17 +24,15 @@ npm run check
 gates, and verifies every workspace tarball. Keep source, tests, changelogs,
 documentation, and metadata together under `packages/<name>`.
 
-Development uses Pi 1.0.0 and TypeBox 1.3.34. Compatibility checks cover Pi
-0.85.1 / permission-system 32.1.0 and Pi 1.0.0 / permission-system 39.0.2 on
-Node.js 22.19 and 24. Permission-system is a development-only UI contract fixture;
+Development uses Pi 1.1.0 and TypeBox 1.3.34. Compatibility checks cover Pi
+0.85.1 / permission-system 32.1.0 and Pi 1.0.0 or 1.1.0 / permission-system 39.0.2
+on Node.js 22.19 and 24. Permission-system is a development-only UI contract fixture;
 consumers install it separately if using YOLO.
 
-**Dependency advisory:** Pi 1.0.0's published shrinkwrap installs
-`brace-expansion@5.0.9`, which has a high-severity DoS advisory (fixed in 5.0.12).
-`npm audit fix` and overrides do not replace that shrinkwrapped dependency here.
-These extensions do not bundle it, but their Pi host does; recheck `npm audit`
-and the installed dependency version before publishing. No security fix is
-claimed until upstream updates its package.
+**Dependency advisory:** The Pi 1.0.0 compatibility fixture installs
+`brace-expansion@5.0.9`, which has a high-severity DoS advisory. Pi 1.1.0 uses
+the fixed 5.0.12 release. These extensions do not bundle Pi; recheck `npm audit`
+and the installed host dependency versions before publishing.
 
 ## Releases
 
@@ -53,7 +51,7 @@ Current published versions:
 | Workspace | Version | Release tag |
 | --- | --- | --- |
 | `fast` | `0.1.3` | `pi-fast-0.1.3` |
-| `footer` | `0.2.1` | `pi-footer-0.2.1` |
+| `footer` | `0.3.0` | `pi-footer-0.3.0` |
 | `yolo` | `0.1.7` | `pi-yolo-0.1.7` |
 | `lazy-skill-tool` | `0.3.1` | `pi-lazy-skill-tool-0.3.1` |
 

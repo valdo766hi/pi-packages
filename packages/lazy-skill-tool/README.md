@@ -4,7 +4,7 @@ A Pi extension that keeps skill routing metadata compact and loads instructions 
 
 Pi remains the source of truth for skill discovery, duplicate resolution, trust, package/settings paths, temporary CLI paths, and canonical file locations. This extension does not scan for skills independently.
 
-## What v0.3.1 does
+## What v0.3.2 does
 
 - Makes `adaptive` the default: start compact, keep every policy-visible skill discoverable, and expand when evidence is weak or the full catalog is inexpensive.
 - Keeps `safe` as an override that always exposes complete descriptions for every policy-visible, model-invokable skill.
@@ -28,10 +28,10 @@ pi install npm:@valdo766hi/pi-lazy-skill-tool
 The package requires:
 
 - Node.js `>=22.19.0`;
-- `@earendil-works/pi-coding-agent >=0.85.1 <0.86.0 || >=1.0.0 <1.1.0`;
+- `@earendil-works/pi-coding-agent >=0.85.1 <0.86.0 || >=1.0.0 <1.2.0`;
 - `typebox >=1.3.7 <2.0.0` supplied by Pi.
 
-v0.3.1 uses Pi's canonical skill formatter, anchored skill-block parser, command registry, tool ownership metadata, active-tool API, project trust state, `before_agent_start` custom messages, `context` hooks, and composed autocomplete API. Tests, type checks, and benchmarks validate Pi `0.85.1` and `1.0.0`. Pi 0.85.0's published top-level module fails a clean import because it references an undeclared `@earendil-works/pi-server`; this package therefore does not claim 0.85.0 support or compatibility outside the 0.85 and 1.0 minor series.
+v0.3.2 uses Pi's canonical skill formatter, anchored skill-block parser, command registry, tool ownership metadata, active-tool API, project trust state, `before_agent_start` custom messages, `context` hooks, and composed autocomplete API. Tests, type checks, and benchmarks validate Pi `0.85.1`, `1.0.0`, and `1.1.0`. Pi 0.85.0's published top-level module fails a clean import because it references an undeclared `@earendil-works/pi-server`; this package therefore does not claim 0.85.0 support or compatibility outside the 0.85, 1.0, and 1.1 minor series.
 
 Pi catches errors from `before_agent_start`, `context`, and `before_provider_request` and continues. This package therefore does not rely on thrown hook errors. When safe context cannot be established it strips skill metadata from the host prompt, publishes `blocked`, and calls `ctx.abort()` from `context`, `agent_start`, `turn_start`, and `before_provider_request` — after the agent run exists, so the abort signal can cancel the provider request.
 
@@ -296,7 +296,7 @@ Run from the repository root:
 npm run benchmark:lazy-skills
 ```
 
-The benchmark uses the installed Pi's `estimateTokens()` and reports exact UTF-8 bytes plus component token estimates. It compares stock Pi, an OpenCode-style verbose name/description/location catalog, frozen v0.1.6 full/adaptive serialization, and current safe/adaptive at 1, 5, 10, 25, 50, and 100 skills. The v0.3.0 catalog figures below are unchanged in v0.3.1 and have been revalidated on Pi 0.85.1 and 1.0.0.
+The benchmark uses the installed Pi's `estimateTokens()` and reports exact UTF-8 bytes plus component token estimates. It compares stock Pi, an OpenCode-style verbose name/description/location catalog, frozen v0.1.6 full/adaptive serialization, and current safe/adaptive at 1, 5, 10, 25, 50, and 100 skills. The v0.3.0 catalog figures below are unchanged in v0.3.2 and have been revalidated on Pi 0.85.1, 1.0.0, and 1.1.0.
 
 Observed on the release-validation workstation:
 

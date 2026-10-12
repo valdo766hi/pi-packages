@@ -1,6 +1,6 @@
 {
   "name": "@valdo766hi/pi-footer",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Pi extension with a calm two-line context and usage footer",
   "type": "module",
   "license": "Apache-2.0",
@@ -32,8 +32,8 @@
     ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=0.85.1 <0.86.0 || >=1.0.0 <1.1.0",
-    "@earendil-works/pi-coding-agent": ">=0.85.1 <0.86.0 || >=1.0.0 <1.1.0",
-    "@earendil-works/pi-tui": ">=0.85.1 <0.86.0 || >=1.0.0 <1.1.0"
+    "@earendil-works/pi-ai": ">=0.85.1 <0.86.0 || >=1.0.0 <1.2.0",
+    "@earendil-works/pi-coding-agent": ">=0.85.1 <0.86.0 || >=1.0.0 <1.2.0",
+    "@earendil-works/pi-tui": ">=0.85.1 <0.86.0 || >=1.0.0 <1.2.0"
   }
 }

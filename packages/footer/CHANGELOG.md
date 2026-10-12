@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1
+
+- Support Pi 1.1.x and validate against Pi 1.1.0; retain Pi 0.85.x and 1.0.x compatibility.
+
 ## 0.3.0
 
 - Mark the current context usage with a `■` head in the zone color at the end of the thin bar.

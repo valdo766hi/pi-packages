@@ -8,13 +8,16 @@ import fastExtension from "../packages/fast/fast.ts";
 import footerExtension from "../packages/footer/footer.ts";
 import yoloExtension from "../packages/yolo/yolo.ts";
 
-test("YOLO toggles preserve fast and footer state without reloading extensions", async () => {
+async function checkModes(flags: string[]) {
 	const agentDir = mkdtempSync(join(tmpdir(), "pi-modes-"));
 	const previous = process.env.PI_CODING_AGENT_DIR;
+	const previousFast = process.env.PI_FAST;
 	process.env.PI_CODING_AGENT_DIR = agentDir;
+	delete process.env.PI_FAST;
 	mock.method(SettingsManager, "create", () => SettingsManager.inMemory());
 	const handlers = new Map<string, Array<(event: any, ctx: any) => any>>();
 	const commands = new Map<string, any>();
+	const registeredFlags = new Map<string, any>();
 	const statuses = new Map<string, string>();
 	let footer: unknown;
 	let reloads = 0;
@@ -32,6 +35,8 @@ test("YOLO toggles preserve fast and footer state without reloading extensions",
 		},
 	};
 	const pi = {
+		registerFlag: (name: string, options: any) => registeredFlags.set(name, options),
+		getFlag: (name: string) => flags.includes(name) || registeredFlags.get(name)?.default,
 		on: (name: string, handler: any) => {
 			const list = handlers.get(name) ?? [];
 			list.push(handler);
@@ -44,7 +49,11 @@ test("YOLO toggles preserve fast and footer state without reloading extensions",
 		fastExtension(pi as any);
 		footerExtension(pi as any);
 		yoloExtension(pi as any);
+		assert.deepEqual([...registeredFlags.keys()].sort(), ["fast", "yolo"]);
+		for (const options of registeredFlags.values()) assert.equal(options.type, "boolean");
 		for (const handler of handlers.get("session_start") ?? []) await handler({}, ctx);
+		assert.equal(statuses.get("yolo"), `YOLO: ${flags.includes("yolo") ? "ON" : "OFF"}`);
+		assert.match(statuses.get("fast")!, flags.includes("fast") ? /FAST: ON$/ : /FAST: OFF$/);
 		await commands.get("fast").handler("on", ctx);
 		await commands.get("footer").handler("", ctx);
 		assert.equal(footer, undefined);
@@ -60,6 +69,12 @@ test("YOLO toggles preserve fast and footer state without reloading extensions",
 		mock.restoreAll();
 		if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = previous;
+		if (previousFast === undefined) delete process.env.PI_FAST;
+		else process.env.PI_FAST = previousFast;
 		rmSync(agentDir, { recursive: true, force: true });
 	}
-});
+}
+
+for (const flags of [[], ["yolo"], ["fast"], ["yolo", "fast"], ["fast", "yolo"]]) {
+	test(`startup flags ${flags.join(", ") || "none"} preserve independent mode toggles`, () => checkModes(flags));
+}

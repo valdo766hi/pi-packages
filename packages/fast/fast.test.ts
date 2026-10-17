@@ -24,7 +24,7 @@ const CODEX = {
 	maxTokens: 1000,
 };
 
-function setup(options: { fastFromEnv?: boolean } = {}) {
+function setup(options: { fastFromEnv?: boolean; fastFromFlag?: boolean } = {}) {
 	const previousFastEnv = process.env.PI_FAST;
 	if (options.fastFromEnv) process.env.PI_FAST = "1";
 	else delete process.env.PI_FAST;
@@ -48,6 +48,8 @@ function setup(options: { fastFromEnv?: boolean } = {}) {
 	};
 
 	const pi = {
+		registerFlag() {},
+		getFlag: (name: string) => name === "fast" && options.fastFromFlag === true,
 		on: (event: string, handler: (event: any, ctx: any) => any) =>
 			handlers.set(event, handler),
 		registerCommand: (name: string, command: any) =>
@@ -116,6 +118,16 @@ test("a new session starts off, even after a parent enables fast mode", async ()
 
 test("PI_FAST=1 explicitly enables fast mode for a new process", () => {
 	assert.equal(setup({ fastFromEnv: true }).state(), "on");
+});
+
+test("--fast enables priority requests and can be disabled with /fast off", async () => {
+	const pi = setup({ fastFromFlag: true });
+	assert.equal(pi.state(), "on");
+	assert.equal(pi.request({}, OPENAI)?.service_tier, "priority");
+
+	await pi.fast("off");
+	assert.equal(pi.state(), "off");
+	assert.equal(pi.request({}, OPENAI), undefined);
 });
 
 // The bolt is a private-use codepoint, so pin it: tooling has silently

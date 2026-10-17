@@ -241,6 +241,12 @@ function patchPermissionUi(
 }
 
 export default function (pi: ExtensionAPI): void {
+	pi.registerFlag("yolo", {
+		description: "Start with automatic approval of native permission prompts",
+		type: "boolean",
+		default: false,
+	});
+
 	let enabled = false;
 	let stateKnown = false;
 	let pendingPrompt: { requestId: string; ambiguous: boolean } | undefined;
@@ -300,6 +306,28 @@ export default function (pi: ExtensionAPI): void {
 		return stateKnown;
 	};
 
+	const setEnabled = (ctx: ExtensionContext, nextEnabled: boolean): void => {
+		try {
+			writePersistedYoloMode(ctx, nextEnabled);
+		} catch (error) {
+			ctx.ui.notify(
+				`YOLO could not update its state: ${errorMessage(error)}`,
+				"error",
+			);
+			syncStatus(ctx);
+			return;
+		}
+
+		stateKnown = true;
+		enabled = nextEnabled;
+		clearPendingPrompt();
+		updateStatus(ctx);
+		ctx.ui.notify(
+			`YOLO overlay ${enabled ? "on" : "off"}. Permission-system config unchanged.`,
+			enabled ? "warning" : "info",
+		);
+	};
+
 	const installUiPatch = (ctx: ExtensionContext): void => {
 		restoreUi?.();
 		restoreUi = patchPermissionUi(ctx, consumePendingPrompt);
@@ -319,7 +347,7 @@ export default function (pi: ExtensionAPI): void {
 
 	pi.on("session_start", (_event, ctx) => {
 		installUiPatch(ctx);
-		syncStatus(ctx);
+		if (syncStatus(ctx) && pi.getFlag("yolo") === true) setEnabled(ctx, true);
 	});
 	pi.on("input", (event, ctx) => {
 		const safe = syncStatus(ctx);
@@ -380,26 +408,7 @@ export default function (pi: ExtensionAPI): void {
 				return;
 			}
 
-			const nextEnabled = requested ? requested === "on" : !currentEnabled;
-			try {
-				writePersistedYoloMode(ctx, nextEnabled);
-			} catch (error) {
-				ctx.ui.notify(
-					`YOLO could not update its state: ${errorMessage(error)}`,
-					"error",
-				);
-				syncStatus(ctx);
-				return;
-			}
-
-			stateKnown = true;
-			enabled = nextEnabled;
-			clearPendingPrompt();
-			updateStatus(ctx);
-			ctx.ui.notify(
-				`YOLO overlay ${enabled ? "on" : "off"}. Permission-system config unchanged.`,
-				enabled ? "warning" : "info",
-			);
+			setEnabled(ctx, requested ? requested === "on" : !currentEnabled);
 		},
 	});
 }

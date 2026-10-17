@@ -30,6 +30,7 @@ function setup(
 	agentDir: string,
 	sessionId: string,
 	reload?: () => Promise<void>,
+	yoloFromFlag = false,
 ) {
 	const handlers = new Map<string, (event: any, ctx: any) => any>();
 	const commands = new Map<string, any>();
@@ -84,6 +85,8 @@ function setup(
 		},
 	};
 	const pi = {
+		registerFlag() {},
+		getFlag: (name: string) => name === "yolo" && yoloFromFlag,
 		events,
 		on: (event: string, handler: any) => handlers.set(event, handler),
 		registerCommand: (name: string, command: any) => commands.set(name, command),
@@ -181,6 +184,48 @@ test("YOLO is opt-in, persists per session, and never changes native config", as
 			child.handlers.get("session_start")!({}, child.ctx);
 			assert.equal(child.status(), "YOLO: OFF");
 			assert.equal(readFileSync(nativeConfigPath, "utf8"), nativeConfig);
+		});
+	} finally {
+		rmSync(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("--yolo enables and persists the overlay without changing the command behavior", async () => {
+	const agentDir = tempDir("pi-yolo-flag-");
+	try {
+		await withAgentDir(agentDir, async () => {
+			const yolo = setup(agentDir, "flag-session", undefined, true);
+			yolo.handlers.get("session_start")!({}, yolo.ctx);
+			assert.equal(yolo.status(), "YOLO: ON");
+			assert.equal(JSON.parse(readFileSync(statePath(agentDir, "flag-session"), "utf8")).enabled, true);
+
+			emitPermissionPrompt(yolo);
+			assert.equal(await yolo.ctx.ui.select("Permission Required", permissionOptions), "Yes");
+
+			const resumed = setup(agentDir, "flag-session");
+			resumed.handlers.get("session_start")!({}, resumed.ctx);
+			assert.equal(resumed.status(), "YOLO: ON");
+
+			await yolo.command("off");
+			assert.equal(yolo.status(), "YOLO: OFF");
+		});
+	} finally {
+		rmSync(agentDir, { recursive: true, force: true });
+	}
+});
+
+test("--yolo does not overwrite corrupt state or enable the overlay", async () => {
+	const agentDir = tempDir("pi-yolo-flag-invalid-");
+	const path = statePath(agentDir, "bad-session");
+	mkdirSync(dirname(path), { recursive: true });
+	writeFileSync(path, "{not-json}\n");
+	try {
+		await withAgentDir(agentDir, () => {
+			const yolo = setup(agentDir, "bad-session", undefined, true);
+			yolo.handlers.get("session_start")!({}, yolo.ctx);
+			assert.equal(yolo.status(), "YOLO: ERROR");
+			assert.equal(yolo.handlers.get("tool_call")!({}, yolo.ctx).block, true);
+			assert.equal(readFileSync(path, "utf8"), "{not-json}\n");
 		});
 	} finally {
 		rmSync(agentDir, { recursive: true, force: true });

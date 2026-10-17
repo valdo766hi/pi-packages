@@ -8,10 +8,18 @@ pi install npm:@valdo766hi/pi-fast
 
 [View this package on npm](https://www.npmjs.com/package/@valdo766hi/pi-fast)
 
-This extension registers `/fast`, which opts the current session into OpenAI's
-`priority` service tier.
+This extension registers `--fast` and `/fast`, which opt the current session
+into OpenAI's `priority` service tier.
 
 ## Commands
+
+Start with fast mode enabled:
+
+```sh
+pi --fast
+```
+
+Or toggle it inside Pi:
 
 ```text
 /fast       # toggle
@@ -21,9 +29,9 @@ This extension registers `/fast`, which opts the current session into OpenAI's
 
 State is in-memory by default. Every new or resumed session starts off, so a
 session never inherits a paid tier from an earlier one. To explicitly opt a
-process or spawned Pi session in, start it with `PI_FAST=1`; otherwise enable
-`/fast on` separately in that session. The footer shows a nerd-font bolt
-(`nf-fa-bolt`, U+F0E7) followed by `FAST: ON` or `FAST: OFF`.
+process or spawned Pi session in, start it with `pi --fast` or `PI_FAST=1 pi`;
+otherwise enable `/fast on` separately in that session. The footer shows a
+nerd-font bolt (`nf-fa-bolt`, U+F0E7) followed by `FAST: ON` or `FAST: OFF`.
 
 The glyph is a private-use codepoint, so `fast.ts` writes it as the escape
 `"\u{f0e7}"` rather than a literal — editors and pipelines have silently

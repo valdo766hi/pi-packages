@@ -11,6 +11,14 @@ Small public Pi extensions published under the `@valdo766hi` npm scope.
 | [`@valdo766hi/pi-yolo`](packages/yolo) | Session-local permission approval overlay with `/yolo` | `pi install npm:@valdo766hi/pi-yolo` |
 | [`@valdo766hi/pi-lazy-skill-tool`](packages/lazy-skill-tool) | Replace Pi's verbose skill catalog with lazy exact-name loading | `pi install npm:@valdo766hi/pi-lazy-skill-tool` |
 
+With the corresponding packages installed, use startup flags separately or together:
+
+```sh
+pi --yolo --fast
+pi --yolo
+pi --fast
+```
+
 ## Development
 
 Use Node.js 24 or newer.

@@ -8,9 +8,9 @@ pi install npm:@valdo766hi/pi-yolo
 
 [View this package on npm](https://www.npmjs.com/package/@valdo766hi/pi-yolo)
 
-This extension registers `/yolo` and adds a session-local approval overlay for
-`@gotgenes/pi-permission-system`. Install that permission-system extension
-separately before using YOLO.
+This extension registers `--yolo` and `/yolo` to control a session-local
+approval overlay for `@gotgenes/pi-permission-system`. Install that
+permission-system extension separately before using YOLO.
 
 Validated pairs: Pi 0.85.1 with permission-system 32.1.0, and Pi 1.0.0 or 1.1.0
 with permission-system 39.0.2, on Node.js 22.19+. Versions 33–38 are not claimed as
@@ -18,14 +18,22 @@ compatible. See [CHANGELOG.md](./CHANGELOG.md) for release notes.
 
 ## Commands
 
+Start with YOLO enabled:
+
+```sh
+pi --yolo
+```
+
+Or toggle it inside Pi:
+
 ```text
 /yolo       # toggle this session
 /yolo on    # enable for this session
 /yolo off   # disable for this session
 ```
 
-YOLO is **OFF by default**. An explicit toggle is persisted in a
-session-keyed file:
+YOLO is **OFF by default**. Enabling it with `--yolo` or `/yolo` persists the
+state in a session-keyed file:
 
 ```text
 ~/.pi/agent/yolo-state/<session-id>.json
@@ -33,8 +41,9 @@ session-keyed file:
 
 `PI_CODING_AGENT_DIR` is honored. The same session restores its state after a
 restart, reload, resume, or compaction. A new session, fork, or subagent starts
-OFF unless explicitly enabled there, matching the opt-in behavior of
-`packages/fast`. Toggling does not reload Pi or reset other extensions' modes.
+OFF unless explicitly enabled there with `--yolo` or `/yolo`, matching the opt-in
+behavior of `packages/fast`. Toggling does not reload Pi or reset other
+extensions' modes.
 
 ## Permission behavior
 

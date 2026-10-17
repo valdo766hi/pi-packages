@@ -1,6 +1,6 @@
 // Fast mode — opt into OpenAI's `priority` service tier for the current session.
 //
-// State lives in memory by default. Set PI_FAST=1 before starting Pi to opt
+// State lives in memory by default. Start Pi with --fast or PI_FAST=1 to opt
 // the process into fast mode explicitly.
 
 import type * as Pi from "@earendil-works/pi-coding-agent";
@@ -20,6 +20,12 @@ const isEnvEnabled = () => process.env.PI_FAST === "1";
 const ICON = "\u{f0e7}";
 
 export default function (pi: Pi.ExtensionAPI) {
+	pi.registerFlag("fast", {
+		description: "Start with OpenAI priority service tier enabled",
+		type: "boolean",
+		default: false,
+	});
+
 	let enabled = isEnvEnabled();
 	let pendingModel: Pi.ExtensionContext["model"];
 
@@ -27,11 +33,11 @@ export default function (pi: Pi.ExtensionAPI) {
 		ctx.ui.setStatus("fast", `${ICON} FAST: ${enabled ? "ON" : "OFF"}`);
 	};
 
-	// Fast mode is not persisted by Pi; sessions start off unless PI_FAST=1.
+	// Fast mode is not persisted; opt in with --fast or PI_FAST=1.
 	pi.on(
 		"session_start",
 		(_event: Pi.SessionStartEvent, ctx: Pi.ExtensionContext) => {
-			enabled = isEnvEnabled();
+			enabled = pi.getFlag("fast") === true || isEnvEnabled();
 			pendingModel = undefined;
 			updateStatus(ctx);
 		},

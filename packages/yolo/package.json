@@ -1,6 +1,6 @@
 {
   "name": "@valdo766hi/pi-yolo",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Pi extension providing a session-local permission approval overlay",
   "type": "module",
   "license": "Apache-2.0",

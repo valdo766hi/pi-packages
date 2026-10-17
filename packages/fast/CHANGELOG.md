@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.5
+
+- Add `--fast` to start sessions with OpenAI priority requests enabled.
+
 ## 0.1.4
 
 - Support Pi 1.1.x and validate against Pi 1.1.0; retain Pi 0.85.x and 1.0.x compatibility.
